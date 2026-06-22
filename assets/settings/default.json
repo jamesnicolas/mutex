@@ -1054,9 +1054,9 @@
     // The default model to use when creating new threads.
     "default_model": {
       // The provider to use.
-      "provider": "zed.dev",
+      "provider": "openai-subscribed",
       // The model to use.
-      "model": "claude-sonnet-4",
+      "model": "gpt-5.5",
       // Whether thinking is enabled.
       "enable_thinking": false,
     },

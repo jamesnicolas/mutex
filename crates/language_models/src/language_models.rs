@@ -8,7 +8,6 @@ use gpui::{App, Context, Entity};
 use language_model::{
     ConfiguredModel, LanguageModelProviderId, LanguageModelRegistry, ZED_CLOUD_PROVIDER_ID,
 };
-use provider::deepseek::DeepSeekLanguageModelProvider;
 
 mod api_key_editor;
 pub mod extension;
@@ -18,31 +17,17 @@ mod settings;
 pub use crate::api_key_editor::{ApiKeyEditor, ApiKeyStatus, api_key_status};
 pub use crate::extension::init_proxy as init_extension_proxy;
 
-use crate::provider::anthropic::AnthropicLanguageModelProvider;
 use crate::provider::anthropic_compatible::AnthropicCompatibleLanguageModelProvider;
-use crate::provider::bedrock::BedrockLanguageModelProvider;
-use crate::provider::cloud::CloudLanguageModelProvider;
-use crate::provider::copilot_chat::CopilotChatLanguageModelProvider;
-use crate::provider::google::GoogleLanguageModelProvider;
-use crate::provider::lmstudio::LmStudioLanguageModelProvider;
-pub use crate::provider::mistral::MistralLanguageModelProvider;
-use crate::provider::ollama::OllamaLanguageModelProvider;
-use crate::provider::open_ai::OpenAiLanguageModelProvider;
 use crate::provider::open_ai_compatible::OpenAiCompatibleLanguageModelProvider;
-use crate::provider::open_router::OpenRouterLanguageModelProvider;
 use crate::provider::openai_subscribed::OpenAiSubscribedProvider;
-use crate::provider::opencode::OpenCodeLanguageModelProvider;
-use crate::provider::vercel_ai_gateway::VercelAiGatewayLanguageModelProvider;
-use crate::provider::x_ai::XAiLanguageModelProvider;
 pub use crate::settings::*;
 
-pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
+pub fn init(_user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
     let credentials_provider = client.credentials_provider();
     let registry = LanguageModelRegistry::global(cx);
     registry.update(cx, |registry, cx| {
         register_language_model_providers(
             registry,
-            user_store,
             client.clone(),
             credentials_provider.clone(),
             cx,
@@ -262,116 +247,10 @@ fn register_compatible_providers(
 
 fn register_language_model_providers(
     registry: &mut LanguageModelRegistry,
-    user_store: Entity<UserStore>,
     client: Arc<Client>,
     credentials_provider: Arc<dyn CredentialsProvider>,
     cx: &mut Context<LanguageModelRegistry>,
 ) {
-    registry.register_provider(
-        Arc::new(CloudLanguageModelProvider::new(
-            user_store,
-            client.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(AnthropicLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(OpenAiLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(OllamaLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(LmStudioLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(DeepSeekLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(GoogleLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        MistralLanguageModelProvider::global(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        ),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(BedrockLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(OpenRouterLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(VercelAiGatewayLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(XAiLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(
-        Arc::new(OpenCodeLanguageModelProvider::new(
-            client.http_client(),
-            credentials_provider.clone(),
-            cx,
-        )),
-        cx,
-    );
-    registry.register_provider(Arc::new(CopilotChatLanguageModelProvider::new(cx)), cx);
     registry.register_provider(
         Arc::new(OpenAiSubscribedProvider::new(
             client.http_client(),
@@ -485,6 +364,30 @@ mod tests {
             .filter(|provider| provider.id().0.as_ref() == id)
             .map(|provider| provider.icon())
             .collect()
+    }
+
+    #[gpui::test]
+    fn test_builtin_language_model_providers_are_codex_only(cx: &mut App) {
+        let (client, credentials_provider) = init_test(cx);
+        let registry = cx.new(|_| LanguageModelRegistry::default());
+
+        registry.update(cx, |registry, cx| {
+            register_language_model_providers(
+                registry,
+                client.clone(),
+                credentials_provider.clone(),
+                cx,
+            );
+        });
+
+        let provider_ids = registry.read_with(cx, |registry, _| {
+            registry
+                .providers()
+                .into_iter()
+                .map(|provider| provider.id().0.to_string())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(provider_ids, vec!["openai-subscribed"]);
     }
 
     #[gpui::test]

@@ -28,8 +28,7 @@ use util::ResultExt as _;
 use crate::provider::open_ai::{OpenAiResponseEventMapper, into_open_ai_response};
 
 const PROVIDER_ID: LanguageModelProviderId = LanguageModelProviderId::new("openai-subscribed");
-const PROVIDER_NAME: LanguageModelProviderName =
-    LanguageModelProviderName::new("ChatGPT Subscription");
+const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new("Codex");
 
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -257,13 +256,13 @@ impl LanguageModelProvider for OpenAiSubscribedProvider {
     }
 
     fn authentication_error_message(&self) -> SharedString {
-        "Your ChatGPT subscription session is invalid or has expired. \
+        "Your Codex subscription session is invalid or has expired. \
         Sign in again via the Agent Panel settings to continue."
             .into()
     }
 
     fn missing_credentials_error_message(&self) -> SharedString {
-        "You are not signed in to your ChatGPT account. \
+        "You are not signed in to your ChatGPT account for Codex. \
         Sign in via the Agent Panel settings to continue."
             .into()
     }
@@ -280,7 +279,7 @@ impl LanguageModelProvider for OpenAiSubscribedProvider {
 }
 
 //
-// The ChatGPT Subscription provider routes requests to chatgpt.com/backend-api/codex,
+// The Codex subscription provider routes requests to chatgpt.com/backend-api/codex,
 // which only supports a subset of OpenAI models. This list is maintained separately
 // from the standard OpenAI API model list (open_ai::Model).
 //
@@ -1075,13 +1074,13 @@ impl Render for ConfigurationView {
         let button_label = if is_signing_in {
             "Signing in…"
         } else {
-            "Sign in to use ChatGPT Subscription"
+            "Sign in to use Codex"
         };
 
         v_flex()
             .gap_2()
             .child(Label::new(
-                "Sign in with your ChatGPT Plus or Pro subscription to use OpenAI models in Zed's agent.",
+                "Sign in with your ChatGPT Plus or Pro subscription to use Codex in the agent.",
             ))
             .child(
                 Button::new("sign-in", button_label)
