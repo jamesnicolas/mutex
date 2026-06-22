@@ -189,9 +189,24 @@ fn update_layout_action_filter(cx: &mut App) {
     });
 }
 
-fn set_window_layout(layout: WindowLayout, cx: &App) {
+fn set_window_layout(layout: WindowLayout, cx: &mut App) {
+    let open_threads_sidebar = matches!(layout, WindowLayout::Agent(_));
     let fs = <dyn fs::Fs>::global(cx);
     drop(AgentSettings::set_layout(layout, fs, cx));
+
+    if open_threads_sidebar
+        && let Some(window) = cx
+            .active_window()
+            .and_then(|window| window.downcast::<MultiWorkspace>())
+    {
+        window
+            .update(cx, |multi_workspace, _window, cx| {
+                if !multi_workspace.sidebar_open() {
+                    multi_workspace.open_sidebar(cx);
+                }
+            })
+            .log_err();
+    }
 }
 
 pub struct TitleBar {

@@ -15,7 +15,7 @@ pub mod visual_tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
 
-use agent_settings::{UserAgentsMdState, init_user_agents_md};
+use agent_settings::{AgentSettings, UserAgentsMdState, WindowLayout, init_user_agents_md};
 use agent_ui::AgentDiffToolbar;
 use anyhow::Context as _;
 pub use app_menus::*;
@@ -508,6 +508,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                         cx.new(|cx| Sidebar::new(multi_workspace_handle.clone(), window, cx));
                     multi_workspace_handle.update(cx, |multi_workspace, cx| {
                         multi_workspace.register_sidebar(sidebar, cx);
+                        open_threads_sidebar_for_agent_layout(multi_workspace, cx);
                     });
                 })
                 .ok();
@@ -626,6 +627,17 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+fn open_threads_sidebar_for_agent_layout(
+    multi_workspace: &mut MultiWorkspace,
+    cx: &mut Context<MultiWorkspace>,
+) {
+    if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_))
+        && !multi_workspace.sidebar_open()
+    {
+        multi_workspace.open_sidebar(cx);
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -2720,6 +2732,37 @@ mod tests {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
                     assert!(workspace.active_item_as::<Editor>(cx).is_some())
                 });
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_agent_layout_opens_threads_sidebar(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({}))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        cx.run_until_parked();
+
+        window
+            .update(cx, |multi_workspace, _window, cx| {
+                assert!(matches!(
+                    AgentSettings::get_layout(cx),
+                    WindowLayout::Agent(_)
+                ));
+                assert!(
+                    multi_workspace.sidebar().is_some(),
+                    "threads sidebar should be registered"
+                );
+                assert!(
+                    multi_workspace.sidebar_open(),
+                    "agent layout should show threads in the sidebar"
+                );
             })
             .unwrap();
     }
