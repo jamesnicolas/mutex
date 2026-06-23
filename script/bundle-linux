@@ -175,17 +175,17 @@ export APP_CLI="zed"
 export APP_ICON="zed"
 export APP_ARGS="%U"
 if [[ "$channel" == "preview" ]]; then
-  export APP_NAME="Zed Preview"
-  APP_ID="dev.zed.Zed-Preview"
+  export APP_NAME="Mutex Preview"
+  APP_ID="dev.mutex.Mutex-Preview"
 elif [[ "$channel" == "nightly" ]]; then
-  export APP_NAME="Zed Nightly"
-  APP_ID="dev.zed.Zed-Nightly"
+  export APP_NAME="Mutex Nightly"
+  APP_ID="dev.mutex.Mutex-Nightly"
 elif [[ "$channel" == "dev" ]]; then
-  export APP_NAME="Zed Devel"
-  APP_ID="dev.zed.Zed-Dev"
+  export APP_NAME="Mutex Devel"
+  APP_ID="dev.mutex.Mutex-Dev"
 else
-  export APP_NAME="Zed"
-  APP_ID="dev.zed.Zed"
+  export APP_NAME="Mutex"
+  APP_ID="dev.mutex.Mutex"
 fi
 
 mkdir -p "${zed_dir}/share/applications"

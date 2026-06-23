@@ -1,8 +1,8 @@
-# Zed Docs
+# Mutex Docs
 
-Welcome to Zed's documentation.
+Welcome to Mutex's documentation.
 
-This is built on push to `main` and published automatically to [https://zed.dev/docs](https://zed.dev/docs).
+This is built on push to `main` and published automatically to [https://mutex.dev/docs](https://mutex.dev/docs).
 
 To preview the docs locally you will need to install [mdBook](https://rust-lang.github.io/mdBook/) (`cargo install mdbook@0.4.40`), generate the action metadata, and then serve:
 
@@ -29,13 +29,13 @@ If for some reason you need to bypass the docs preprocessor, you can comment out
 
 ## Images and videos
 
-To add images or videos to the docs, upload them to another location (e.g., zed.dev, GitHub's asset storage) and then link out to them from the docs.
+To add images or videos to the docs, upload them to another location (e.g., mutex.dev, GitHub's asset storage) and then link out to them from the docs.
 
 Putting binary assets such as images in the Git repository will bloat the repository size over time.
 
 ## Internal notes:
 
-- We have a Cloudflare router called `docs-proxy` that intercepts requests to `zed.dev/docs` and forwards them to the "docs" Cloudflare Pages project.
+- We have a Cloudflare router called `docs-proxy` that intercepts requests to `mutex.dev/docs` and forwards them to the "docs" Cloudflare Pages project.
 - The CI uploads a new version to the Cloudflare Pages project from `.github/workflows/deploy_docs.yml` on every push to `main`.
 
 ### Table of Contents

@@ -336,7 +336,7 @@ pub enum Event {
     LanguageServerRemoved(LanguageServerId),
     LanguageServerLog(LanguageServerId, LanguageServerLogType, String),
     // [`lsp::notification::DidOpenTextDocument`] was sent to this server using the buffer data.
-    // Zed's buffer-related data is updated accordingly.
+    // Mutex's buffer-related data is updated accordingly.
     LanguageServerBufferRegistered {
         server_id: LanguageServerId,
         buffer_id: BufferId,
@@ -1100,7 +1100,7 @@ pub enum PulledDiagnostics {
     },
 }
 
-/// Whether to disable all AI features in Zed.
+/// Whether to disable all AI features in Mutex.
 ///
 /// Default: false
 #[derive(Copy, Clone, Debug, RegisterSetting)]
@@ -3732,7 +3732,7 @@ impl Project {
                         notification_id: format!("local-tasks-{path:?}").into(),
                         link: Some(ToastLink {
                             label: "Open Tasks Documentation",
-                            url: "https://zed.dev/docs/tasks",
+                            url: "https://mutex.dev/docs/tasks",
                         }),
                         message,
                     });

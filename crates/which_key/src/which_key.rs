@@ -1,4 +1,4 @@
-//! Which-key support for Zed.
+//! Which-key support for Mutex.
 
 mod which_key_modal;
 mod which_key_settings;

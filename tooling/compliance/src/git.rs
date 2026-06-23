@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn automated_change_detects_version_bump() {
         let line = format!(
-            "abc123{d}Zed Zippy{d}bot@test.com{d}Bump to 0.230.2 for @cole-miller",
+            "abc123{d}Mutex Zippy{d}bot@test.com{d}Bump to 0.230.2 for @cole-miller",
             d = CommitDetails::FIELD_DELIMITER
         );
         let commit = CommitDetails::parse(&line, "").unwrap();
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn automated_change_detects_stable_release_channel() {
         let line = format!(
-            "abc123{d}Zed Zippy{d}bot@test.com{d}v0.233.x stable for @cole-miller",
+            "abc123{d}Mutex Zippy{d}bot@test.com{d}v0.233.x stable for @cole-miller",
             d = CommitDetails::FIELD_DELIMITER
         );
         let commit = CommitDetails::parse(&line, "").unwrap();
@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn automated_change_detects_preview_release_channel() {
         let line = format!(
-            "abc123{d}Zed Zippy{d}bot@test.com{d}v0.234.x preview for @cole-miller",
+            "abc123{d}Mutex Zippy{d}bot@test.com{d}v0.234.x preview for @cole-miller",
             d = CommitDetails::FIELD_DELIMITER
         );
         let commit = CommitDetails::parse(&line, "").unwrap();
@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn automated_change_rejects_wrong_prefix() {
         let line = format!(
-            "abc123{d}Zed Zippy{d}bot@test.com{d}Fix thing for @cole-miller",
+            "abc123{d}Mutex Zippy{d}bot@test.com{d}Fix thing for @cole-miller",
             d = CommitDetails::FIELD_DELIMITER
         );
         let commit = CommitDetails::parse(&line, "").unwrap();
@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn automated_change_rejects_trailing_text() {
         let line = format!(
-            "abc123{d}Zed Zippy{d}bot@test.com{d}Bump to 0.230.2 for @cole-miller extra",
+            "abc123{d}Mutex Zippy{d}bot@test.com{d}Bump to 0.230.2 for @cole-miller extra",
             d = CommitDetails::FIELD_DELIMITER
         );
         let commit = CommitDetails::parse(&line, "").unwrap();
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn committer_is_zed_zippy() {
-        let committer = Committer::new("Zed Zippy", ZED_ZIPPY_EMAIL);
+        let committer = Committer::new("Mutex Zippy", ZED_ZIPPY_EMAIL);
         assert!(committer.is_zed_zippy());
     }
 

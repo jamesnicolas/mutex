@@ -13,11 +13,11 @@ use crate::{
     VariableName, ZED_VARIABLE_NAME_PREFIX, serde_helpers::non_empty_string_vec,
 };
 
-/// A template definition of a Zed task to run.
+/// A template definition of a Mutex task to run.
 /// May use the [`VariableName`] to get the corresponding substitutions into its fields.
 ///
 /// Template itself is not ready to spawn a task, it needs to be resolved with a [`TaskContext`] first, that
-/// contains all relevant Zed state in task variables.
+/// contains all relevant Mutex state in task variables.
 /// A single template may produce different tasks (or none) for different contexts.
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -413,7 +413,7 @@ fn substitute_all_template_variables_in_str<A: AsRef<str>>(
             // Got a task variable hit - use the variable value, ignore default
             return Ok(Some(name.as_ref().to_owned()));
         } else if variable_name.starts_with(ZED_VARIABLE_NAME_PREFIX) {
-            // Unknown ZED variable - use default if available
+            // Unknown MUTEX variable - use default if available
             if !default.is_empty() {
                 // Strip the colon and return the default value
                 return Ok(Some(default[1..].to_owned()));
@@ -783,7 +783,7 @@ mod tests {
             );
             assert!(
                 matches!(resolved_task_attempt, None),
-                "If any of the Zed task variables is not substituted, the task should not be resolved, but got some resolution without the variable {removed_variable:?} (index {i})"
+                "If any of the Mutex task variables is not substituted, the task should not be resolved, but got some resolution without the variable {removed_variable:?} (index {i})"
             );
         }
     }
@@ -1042,7 +1042,7 @@ mod tests {
             "Should use defaults for missing vars"
         );
 
-        // Test 3: Missing ZED variable without default should fail
+        // Test 3: Missing MUTEX variable without default should fail
         let task_no_default = TaskTemplate {
             label: "test no default".to_string(),
             command: "${ZED_MISSING_NO_DEFAULT}".to_string(),
@@ -1053,7 +1053,7 @@ mod tests {
             task_no_default
                 .resolve_task(TEST_ID_BASE, &TaskContext::default())
                 .is_none(),
-            "Should fail when ZED variable has no default and doesn't exist"
+            "Should fail when MUTEX variable has no default and doesn't exist"
         );
     }
 

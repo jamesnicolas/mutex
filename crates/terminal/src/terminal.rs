@@ -612,7 +612,7 @@ const DEBUG_TERMINAL_HEIGHT: Pixels = px(30.);
 const DEBUG_CELL_WIDTH: Pixels = px(5.);
 const DEBUG_LINE_HEIGHT: Pixels = px(5.);
 
-/// Inserts Zed-specific environment variables for terminal sessions.
+/// Inserts Mutex-specific environment variables for terminal sessions.
 /// Used by both local terminals and remote terminals (via SSH).
 pub fn insert_zed_terminal_env(
     env: &mut HashMap<String, String>,
@@ -2462,7 +2462,7 @@ impl Terminal {
     /// that's running inside the terminal.
     ///
     /// This does *not* return the working directory of the shell that runs on the
-    /// remote host, in case Zed is connected to a remote host.
+    /// remote host, in case Mutex is connected to a remote host.
     fn client_side_working_directory(&self) -> Option<PathBuf> {
         match &self.terminal_type {
             TerminalType::Pty { info, .. } => info
@@ -2625,7 +2625,7 @@ impl Terminal {
         if !lines_to_show.is_empty() {
             // SAFETY: the invocation happens on non `TaskStatus::Running` tasks, once,
             // after either `AlacTermEvent::Exit` or `AlacTermEvent::ChildExit` events that are spawned
-            // when Zed task finishes and no more output is made.
+            // when Mutex task finishes and no more output is made.
             // After the task summary is output once, no more text is appended to the terminal.
             unsafe { append_text_to_term(&mut self.term.lock(), &lines_to_show) };
         }
@@ -3685,7 +3685,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_hyperlink_ctrl_click_same_position(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://mutex.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             let click_position = point(px(80.0), px(10.0));
@@ -3706,7 +3706,7 @@ mod tests {
     async fn test_hyperlink_ctrl_click_drag_outside_bounds(cx: &mut TestAppContext) {
         let terminal = init_ctrl_click_hyperlink_test(
             cx,
-            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+            b"Visit https://mutex.dev/ for more\r\nThis is another line\r\n",
         );
 
         terminal.update(cx, |terminal, cx| {
@@ -3729,7 +3729,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_hyperlink_ctrl_click_drag_within_bounds(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://mutex.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             let down_position = point(px(70.0), px(10.0));

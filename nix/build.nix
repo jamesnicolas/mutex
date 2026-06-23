@@ -228,7 +228,7 @@ let
             ../assets/fonts/ibm-plex-sans
           ];
         };
-        ZED_UPDATE_EXPLANATION = "Zed has been installed using Nix. Auto-updates have thus been disabled.";
+        ZED_UPDATE_EXPLANATION = "Mutex has been installed using Nix. Auto-updates have thus been disabled.";
         RELEASE_VERSION = version;
         ZED_COMMIT_SHA = lib.optionalString (commitSha != null) "${commitSha}";
         LK_CUSTOM_WEBRTC = pkgs.callPackage ./livekit-libwebrtc/package.nix { };
@@ -333,14 +333,14 @@ craneLib.buildPackage (
           popd
 
           mkdir -p $out/Applications $out/bin
-          # Zed expects git next to its own binary
+          # Mutex expects git next to its own binary
           ln -s ${git}/bin/git "$app_path/Contents/MacOS/git"
           mv $TARGET_DIR/cli "$app_path/Contents/MacOS/cli"
           mv "$app_path" $out/Applications/
 
           # Physical location of the CLI must be inside the app bundle as this is used
           # to determine which app to start
-          ln -s "$out/Applications/Zed Nightly.app/Contents/MacOS/cli" $out/bin/zed
+          ln -s "$out/Applications/Mutex Nightly.app/Contents/MacOS/cli" $out/bin/zed
 
           runHook postInstall
         ''
@@ -364,11 +364,11 @@ craneLib.buildPackage (
             export DO_STARTUP_NOTIFY="true"
             export APP_CLI="zed"
             export APP_ICON="zed"
-            export APP_NAME="Zed Nightly"
+            export APP_NAME="Mutex Nightly"
             export APP_ARGS="%U"
             mkdir -p "$out/share/applications"
-            ${lib.getExe envsubst} < "crates/zed/resources/zed.desktop.in" > "$out/share/applications/dev.zed.Zed-Nightly.desktop"
-            chmod +x "$out/share/applications/dev.zed.Zed-Nightly.desktop"
+            ${lib.getExe envsubst} < "crates/zed/resources/zed.desktop.in" > "$out/share/applications/dev.mutex.Mutex-Nightly.desktop"
+            chmod +x "$out/share/applications/dev.mutex.Mutex-Nightly.desktop"
           )
 
           runHook postInstall
@@ -381,8 +381,8 @@ craneLib.buildPackage (
 
     meta = {
       description = "High-performance, multiplayer code editor from the creators of Atom and Tree-sitter";
-      homepage = "https://zed.dev";
-      changelog = "https://zed.dev/releases/preview";
+      homepage = "https://mutex.dev";
+      changelog = "https://mutex.dev/releases/preview";
       license = lib.licenses.gpl3Only;
       mainProgram = "zed";
       platforms = lib.platforms.linux ++ lib.platforms.darwin;

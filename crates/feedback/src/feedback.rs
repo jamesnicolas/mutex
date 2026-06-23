@@ -9,7 +9,7 @@ use zed_actions::feedback::{EmailZed, FileBugReport, RequestFeature};
 actions!(
     zed,
     [
-        /// Opens the Zed repository on GitHub.
+        /// Opens the Mutex repository on GitHub.
         OpenZedRepo,
         /// Copies installed extensions to the clipboard for bug reports.
         CopyInstalledExtensionsIntoClipboard
@@ -35,7 +35,7 @@ fn file_bug_report_url(specs: &SystemSpecs) -> String {
 
 fn email_zed_url(specs: &SystemSpecs) -> String {
     format!(
-        concat!("mailto:hi@zed.dev", "?", "body={}"),
+        concat!("mailto:hi@mutex.dev", "?", "body={}"),
         email_body(specs)
     )
 }

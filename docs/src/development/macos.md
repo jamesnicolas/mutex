@@ -1,13 +1,13 @@
 ---
-title: Building Zed for macOS
-description: "Guide to building zed for macos for Zed development."
+title: Building Mutex for macOS
+description: "Guide to building zed for macos for Mutex development."
 ---
 
-# Building Zed for macOS
+# Building Mutex for macOS
 
 ## Repository
 
-Clone the [Zed repository](https://github.com/zed-industries/zed).
+Clone the [Mutex repository](https://github.com/zed-industries/zed).
 
 ## Dependencies
 
@@ -36,9 +36,9 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
   brew install cmake
   ```
 
-## Building Zed from Source
+## Building Mutex from Source
 
-Once you have the dependencies installed, you can build Zed using [Cargo](https://doc.rust-lang.org/cargo/).
+Once you have the dependencies installed, you can build Mutex using [Cargo](https://doc.rust-lang.org/cargo/).
 
 For a debug build:
 
@@ -60,7 +60,7 @@ cargo test --workspace
 
 ## Visual Regression Tests
 
-Zed includes visual regression tests that capture screenshots of real Zed windows and compare them against baseline images. These tests require macOS with Screen Recording permission.
+Mutex includes visual regression tests that capture screenshots of real Mutex windows and compare them against baseline images. These tests require macOS with Screen Recording permission.
 
 ### Prerequisites
 
@@ -175,18 +175,18 @@ This error seems to be caused by OS resource constraints. Installing and running
 
 ### Avoiding continual rebuilds
 
-If Zed continually rebuilds root crates, you may be opening the Zed codebase itself in your development build.
+If Mutex continually rebuilds root crates, you may be opening the Mutex codebase itself in your development build.
 
 This causes problems because `cargo run` exports a bunch of environment
 variables which are picked up by the `rust-analyzer` that runs in the development
-build of Zed. These environment variables are in turn passed to `cargo check`, which
+build of Mutex. These environment variables are in turn passed to `cargo check`, which
 invalidates the build cache of some of the crates we depend on.
 
 To avoid this, run the built binary against a different project, for example `cargo run ~/path/to/other/project`.
 
 ### Speeding up verification
 
-If you build Zed frequently, macOS may keep verifying new builds, which can add a few seconds to each iteration.
+If you build Mutex frequently, macOS may keep verifying new builds, which can add a few seconds to each iteration.
 
 To fix this, you can:
 

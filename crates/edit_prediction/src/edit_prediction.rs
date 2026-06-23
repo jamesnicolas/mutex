@@ -2438,7 +2438,7 @@ fn currently_following(project: &Entity<Project>, cx: &App) -> bool {
 
 fn is_ep_store_provider(provider: EditPredictionProvider) -> bool {
     match provider {
-        EditPredictionProvider::Zed
+        EditPredictionProvider::Mutex
         | EditPredictionProvider::Mercury
         | EditPredictionProvider::Ollama
         | EditPredictionProvider::OpenAiCompatibleApi => true,
@@ -2462,7 +2462,7 @@ impl EditPredictionStore {
     ) {
         let (needs_acceptance_tracking, max_pending_predictions) =
             match all_language_settings(None, cx).edit_predictions.provider {
-                EditPredictionProvider::Zed | EditPredictionProvider::Mercury => (true, 2),
+                EditPredictionProvider::Mutex | EditPredictionProvider::Mercury => (true, 2),
                 EditPredictionProvider::Ollama => (false, 1),
                 EditPredictionProvider::OpenAiCompatibleApi => (false, 2),
                 EditPredictionProvider::None
@@ -3330,7 +3330,7 @@ fn merge_anchor_ranges(
 
 #[derive(Error, Debug)]
 #[error(
-    "You must update to Zed version {minimum_version} or higher to continue using edit predictions."
+    "You must update to Mutex version {minimum_version} or higher to continue using edit predictions."
 )]
 pub struct ZedUpdateRequiredError {
     minimum_version: Version,
@@ -3343,7 +3343,7 @@ pub(crate) struct CloudRequestTimeoutError;
 struct ZedPredictUpsell;
 
 fn is_upsell_dismissed(cx: &App) -> bool {
-    // To make this backwards compatible with older versions of Zed, we
+    // To make this backwards compatible with older versions of Mutex, we
     // check if the user has seen the previous Edit Prediction Onboarding
     // before, by checking the data collection choice which was written to
     // the database once the user clicked on "Accept and Enable"

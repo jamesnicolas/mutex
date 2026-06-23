@@ -645,7 +645,7 @@ pub async fn connect(
 
 const MINIMUM_SUPPORTED_VERSION: ProtocolVersion = ProtocolVersion::V1;
 
-/// Build a `Client` connection over `transport` with Zed's full
+/// Build a `Client` connection over `transport` with Mutex's full
 /// agent→client handler set wired up.
 ///
 /// All incoming requests and notifications are forwarded to the foreground

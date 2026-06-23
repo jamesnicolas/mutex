@@ -1,11 +1,11 @@
 ---
 title: Extension Capabilities
-description: "Extension Capabilities for Zed extensions."
+description: "Extension Capabilities for Mutex extensions."
 ---
 
 # Extension Capabilities
 
-The operations that Zed extensions are able to perform are governed by a capability system.
+The operations that Mutex extensions are able to perform are governed by a capability system.
 
 ## Restricting capabilities
 

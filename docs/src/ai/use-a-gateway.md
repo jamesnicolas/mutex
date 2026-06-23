@@ -1,13 +1,13 @@
 ---
-title: Use a Gateway - Zed
-description: Configure OpenRouter, Vercel AI Gateway, Amazon Bedrock, and other gateway or cloud model platforms in Zed.
+title: Use a Gateway - Mutex
+description: Configure OpenRouter, Vercel AI Gateway, Amazon Bedrock, and other gateway or cloud model platforms in Mutex.
 ---
 
 # Use a Gateway
 
 Use a gateway when you route model requests through a platform such as OpenRouter, Vercel AI Gateway, Amazon Bedrock, or another OpenAI-compatible service.
 
-| Gateway                   | Zed AI features | External Agents | Terminal Threads | Notes                                        |
+| Gateway                   | Mutex AI features | External Agents | Terminal Threads | Notes                                        |
 | ------------------------- | --------------- | --------------- | ---------------- | -------------------------------------------- |
 | OpenRouter                | Yes             | Separate config | Separate config  | Uses OpenRouter API access                   |
 | Vercel AI Gateway         | Yes             | Separate config | Separate config  | Uses Vercel AI Gateway API access            |
@@ -16,14 +16,14 @@ Use a gateway when you route model requests through a platform such as OpenRoute
 
 ## OpenRouter {#openrouter}
 
-Use OpenRouter when you want to route Zed AI features through OpenRouter.
+Use OpenRouter when you want to route Mutex AI features through OpenRouter.
 
 1. Visit [OpenRouter](https://openrouter.ai) and create an account.
 2. Generate an API key from your [OpenRouter keys page](https://openrouter.ai/keys).
 3. Open Agent Settings with {#action agent::OpenSettings} and go to the OpenRouter section.
 4. Enter your OpenRouter API key.
 
-Zed also reads `OPENROUTER_API_KEY` from the local Zed process environment.
+Mutex also reads `OPENROUTER_API_KEY` from the local Mutex process environment.
 
 When using OpenRouter as your assistant provider, explicitly select a model in your settings:
 
@@ -101,13 +101,13 @@ Supported fields include `order`, `allow_fallbacks`, `require_parameters`, `data
 
 ## Vercel AI Gateway {#vercel-ai-gateway}
 
-Use Vercel AI Gateway when you want to route Zed AI features through Vercel.
+Use Vercel AI Gateway when you want to route Mutex AI features through Vercel.
 
 1. Create an API key from your Vercel AI Gateway keys page.
 2. Open Agent Settings with {#action agent::OpenSettings} and go to the Vercel AI Gateway section.
 3. Enter your Vercel AI Gateway API key.
 
-Zed also reads `VERCEL_AI_GATEWAY_API_KEY` from the local Zed process environment.
+Mutex also reads `VERCEL_AI_GATEWAY_API_KEY` from the local Mutex process environment.
 
 You can set a custom endpoint for Vercel AI Gateway in settings:
 
@@ -132,7 +132,7 @@ Your AWS credentials need these permissions:
 - `bedrock:InvokeModelWithResponseStream`
 - `bedrock:InvokeModel`
 
-Bedrock supports Zed-prefixed AWS environment variables so Zed does not override or consume your normal AWS credentials:
+Bedrock supports Mutex-prefixed AWS environment variables so Mutex does not override or consume your normal AWS credentials:
 
 - `ZED_ACCESS_KEY_ID`
 - `ZED_SECRET_ACCESS_KEY`
@@ -179,9 +179,9 @@ The API key itself is stored in the system keychain, not in `settings.json`.
 
 ### Bedrock Cross-Region Inference {#bedrock-cross-region-inference}
 
-Zed uses [Cross-Region inference](https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html) for Bedrock on a best-effort basis.
+Mutex uses [Cross-Region inference](https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html) for Bedrock on a best-effort basis.
 
-By default, Zed uses regional inference profiles. To opt into global profiles, add `allow_global`:
+By default, Mutex uses regional inference profiles. To opt into global profiles, add `allow_global`:
 
 ```json [settings]
 {

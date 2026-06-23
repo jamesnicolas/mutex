@@ -9351,13 +9351,15 @@ pub async fn apply_restored_multiworkspace_state(
             .ok();
     }
 
-    if *sidebar_open {
-        window_handle
-            .update(cx, |multi_workspace, _, cx| {
+    window_handle
+        .update(cx, |multi_workspace, _, cx| {
+            if *sidebar_open {
                 multi_workspace.restore_open_sidebar(cx);
-            })
-            .ok();
-    }
+            } else {
+                multi_workspace.restore_close_sidebar(cx);
+            }
+        })
+        .ok();
 
     if let Some(sidebar_state) = sidebar_state {
         window_handle
@@ -9381,7 +9383,7 @@ actions!(
         ///
         /// If you want to open a specific channel, use `zed::OpenZedUrl` with a channel notes URL -
         /// can be copied via "Copy link to section" in the context menu of the channel notes
-        /// buffer. These URLs look like `https://zed.dev/channel/channel-name-CHANNEL_ID/notes`.
+        /// buffer. These URLs look like `https://mutex.dev/channel/channel-name-CHANNEL_ID/notes`.
         OpenChannelNotes,
         /// Mutes your microphone.
         Mute,
@@ -9409,9 +9411,9 @@ pub struct OpenChannelNotesById {
 actions!(
     zed,
     [
-        /// Opens the Zed log file.
+        /// Opens the Mutex log file.
         OpenLog,
-        /// Reveals the Zed log file in the system file manager.
+        /// Reveals the Mutex log file in the system file manager.
         RevealLogInFileManager
     ]
 );
@@ -9625,7 +9627,7 @@ pub fn join_channel(
                         let detail: SharedString = match err.error_code() {
                             ErrorCode::SignedOut => "Please sign in to continue.".into(),
                             ErrorCode::UpgradeRequired => concat!(
-                                "Your are running an unsupported version of Zed. ",
+                                "Your are running an unsupported version of Mutex. ",
                                 "Please update to continue."
                             )
                             .into(),

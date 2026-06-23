@@ -1788,7 +1788,7 @@ impl ThreadView {
                 ThreadError::PaymentRequired => (
                     "payment_required",
                     None,
-                    "You reached your free usage limit. Upgrade to Zed Pro for more prompts."
+                    "You reached your free usage limit. Upgrade to Mutex Pro for more prompts."
                         .into(),
                 ),
                 ThreadError::Refusal => {
@@ -6079,7 +6079,7 @@ impl ThreadView {
 
             let tooltip_meta = || {
                 SharedString::new(
-                    "Rating the thread sends all of your current conversation to the Zed team.",
+                    "Rating the thread sends all of your current conversation to the Mutex team.",
                 )
             };
 
@@ -9964,7 +9964,7 @@ impl ThreadView {
             ThreadError::RateLimitExceeded { provider } => self.render_error_callout(
                 "Rate Limit Reached",
                 format!(
-                    "{provider}'s rate limit was reached. Zed will retry automatically. \
+                    "{provider}'s rate limit was reached. Mutex will retry automatically. \
                     You can also wait a moment and try again."
                 )
                 .into(),
@@ -9975,7 +9975,7 @@ impl ThreadView {
             ThreadError::ServerOverloaded { provider } => self.render_error_callout(
                 "Provider Unavailable",
                 format!(
-                    "{provider}'s servers are temporarily unavailable. Zed will retry \
+                    "{provider}'s servers are temporarily unavailable. Mutex will retry \
                     automatically. If the problem persists, check the provider's status page."
                 )
                 .into(),
@@ -9995,7 +9995,7 @@ impl ThreadView {
             ThreadError::StreamError { provider } => self.render_error_callout(
                 "Connection Interrupted",
                 format!(
-                    "The connection to {provider}'s API was interrupted. Zed will retry \
+                    "The connection to {provider}'s API was interrupted. Mutex will retry \
                     automatically. If the problem persists, check your network connection."
                 )
                 .into(),
@@ -10046,7 +10046,7 @@ impl ThreadView {
                 "API Error",
                 format!(
                     "{provider}'s API returned an unexpected error. \
-                    If the problem persists, try switching models or restarting Zed."
+                    If the problem persists, try switching models or restarting Mutex."
                 )
                 .into(),
                 true,
@@ -10097,7 +10097,7 @@ impl ThreadView {
 
     fn render_payment_required_error(&self, cx: &mut Context<Self>) -> Callout {
         const ERROR_MESSAGE: &str =
-            "You reached your free usage limit. Upgrade to Zed Pro for more prompts.";
+            "You reached your free usage limit. Upgrade to Mutex Pro for more prompts.";
 
         Callout::new()
             .severity(Severity::Error)
@@ -10222,7 +10222,7 @@ impl ThreadView {
     }
 
     fn current_model_name(&self, cx: &App) -> SharedString {
-        // For native agent (Zed Agent), use the specific model name (e.g., "Claude 3.5 Sonnet")
+        // For native agent (Mutex Agent), use the specific model name (e.g., "Claude 3.5 Sonnet")
         // For ACP agents, use the agent name (e.g., "Claude Agent", "Gemini CLI")
         // This provides better clarity about what refused the request
         if self.as_native_connection(cx).is_some() {

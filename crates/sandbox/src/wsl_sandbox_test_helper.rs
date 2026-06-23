@@ -11,7 +11,7 @@
 //! one: that a sandboxed process cannot escape via WSL interop by exec'ing a
 //! Windows binary.
 //!
-//! It targets the **default** WSL distro (matching real Zed usage for native
+//! It targets the **default** WSL distro (matching real Mutex usage for native
 //! Windows paths); provision that distro before running (see
 //! `script/test-wsl-sandbox.ps1`). Like the Linux helper, it **skips** (rather
 //! than fails) the enforcement assertions when the environment can't actually
@@ -121,7 +121,7 @@ mod imp {
         // than overlaying like `/tmp`). This mirrors the Linux helper and is
         // robust: it doesn't depend on how drvfs `/mnt/<drive>` submounts behave
         // under bwrap's recursive root bind. The Windows-drive translation path
-        // (the realistic Zed-on-`C:` case) gets its own dedicated check below.
+        // (the realistic Mutex-on-`C:` case) gets its own dedicated check below.
         let root_base = format!("/var/tmp/zed-wsl-sandbox-test-{pid}");
         let writable_wsl = format!("{root_base}/writable");
         let forbidden_wsl = format!("{root_base}/forbidden");
@@ -321,7 +321,7 @@ mod imp {
     /// Windows-specific GRANT: a writable directory passed as a native `C:\`
     /// path is translated into WSL with `wslpath`, bound read-write, and a write
     /// inside the sandbox lands back on the Windows filesystem. Exercises the
-    /// native-drive path translation end-to-end (the realistic case of Zed on
+    /// native-drive path translation end-to-end (the realistic case of Mutex on
     /// Windows sandboxing a command in a project under `C:\`).
     fn check_windows_drive_writable(wsl: &Wsl, checks: &mut Checks) -> Result<()> {
         let base =
@@ -476,7 +476,7 @@ mod imp {
         )
     }
 
-    /// Drive the real sandbox the way Zed's terminal integration does: wrap the
+    /// Drive the real sandbox the way Mutex's terminal integration does: wrap the
     /// invocation, then spawn the resulting `wsl.exe` command and collect its
     /// result. `wrap_invocation` errors are classified into [`Outcome`] by the
     /// shared unavailable-prefix marker rather than bubbling up, so callers can

@@ -624,7 +624,7 @@ impl WgpuRenderer {
         dual_source_blending: bool,
     ) -> WgpuPipelines {
         // Diagnostic guard: verify the device actually has
-        // DUAL_SOURCE_BLENDING. We have a crash report (ZED-5G1) where a
+        // DUAL_SOURCE_BLENDING. We have a crash report (MUTEX-5G1) where a
         // feature mismatch caused a wgpu-hal abort, but we haven't
         // identified the code path that produces the mismatch. This
         // guard prevents the crash and logs more evidence.

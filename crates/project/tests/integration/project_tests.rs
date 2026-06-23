@@ -1208,7 +1208,7 @@ async fn test_invalid_local_tasks_shows_toast_with_doc_link(cx: &mut gpui::TestA
             } => {
                 assert!(notification_id.starts_with("local-tasks-"));
                 assert!(message.contains("ZED_FOO"));
-                assert_eq!(*url, "https://zed.dev/docs/tasks");
+                assert_eq!(*url, "https://mutex.dev/docs/tasks");
                 *saw_toast.borrow_mut() = true;
             }
             _ => {}
@@ -13586,9 +13586,9 @@ fn git_cmd(work_dir: &Path) -> Command {
         .env("GIT_CONFIG_GLOBAL", "")
         .env("GIT_CONFIG_SYSTEM", "")
         .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@zed.dev")
+        .env("GIT_AUTHOR_EMAIL", "test@mutex.dev")
         .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@zed.dev");
+        .env("GIT_COMMITTER_EMAIL", "test@mutex.dev");
     cmd
 }
 

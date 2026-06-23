@@ -95,7 +95,7 @@ mod imp {
         command_succeeded: bool,
     }
 
-    /// Drive the sandbox launcher the same way Zed's terminal integration does:
+    /// Drive the sandbox launcher the same way Mutex's terminal integration does:
     /// bind a status channel, build the launcher invocation, spawn it, and collect
     /// both the reported status and the command's exit result.
     fn drive_launcher(

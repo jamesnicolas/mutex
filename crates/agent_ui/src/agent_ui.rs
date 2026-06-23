@@ -292,7 +292,7 @@ actions!(
         ScrollOutputToNextMessage,
         /// Toggles in-thread search over the current agent thread's contents.
         ToggleSearch,
-        /// Import agent threads from other Zed release channels (e.g. Preview, Nightly).
+        /// Import agent threads from other Mutex release channels (e.g. Preview, Nightly).
         ImportThreadsFromOtherChannels,
         /// Starts a new terminal thread.
         NewTerminalThread,
@@ -434,7 +434,7 @@ impl Agent {
 
     pub fn label(&self) -> SharedString {
         match self {
-            Self::NativeAgent => "Zed Agent".into(),
+            Self::NativeAgent => "Mutex Agent".into(),
             Self::Custom { id, .. } => id.0.clone(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Stub => "Stub Agent".into(),
@@ -822,7 +822,7 @@ fn update_command_palette_filter(cx: &mut App) {
                     filter.show_namespace("copilot");
                     filter.show_action_types(edit_prediction_actions.iter());
                 }
-                EditPredictionProvider::Zed
+                EditPredictionProvider::Mutex
                 | EditPredictionProvider::Codestral
                 | EditPredictionProvider::Ollama
                 | EditPredictionProvider::OpenAiCompatibleApi

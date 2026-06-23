@@ -1,6 +1,6 @@
 ---
 title: Erlang
-description: "Configure Erlang language support in Zed, including language servers, formatting, and debugging."
+description: "Configure Erlang language support in Mutex, including language servers, formatting, and debugging."
 ---
 
 # Erlang

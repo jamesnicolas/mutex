@@ -256,7 +256,7 @@ fn rollout_workflows_to_extension(
         let title = format!("Update CI workflows to `{short_sha}`");
 
         let body = formatdoc! {r#"
-            This PR updates the CI workflow files from the main Zed repository
+            This PR updates the CI workflow files from the main Mutex repository
             based on the commit zed-industries/zed@${{{{ github.sha }}}}
 
             {context_input}

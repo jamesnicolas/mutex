@@ -91,9 +91,9 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 actions!(
     client,
     [
-        /// Signs in to Zed account.
+        /// Signs in to Mutex account.
         SignIn,
-        /// Signs out of Zed account.
+        /// Signs out of Mutex account.
         SignOut,
         /// Reconnects to the collaboration server.
         Reconnect
@@ -106,7 +106,7 @@ pub struct ClientSettings {
     /// Overrides the key used to store credentials in the system keychain.
     /// Defaults to `server_url` when unset.
     ///
-    /// Useful when running multiple Zed instances side by side without them
+    /// Useful when running multiple Mutex instances side by side without them
     /// overwriting each other's keychain entries.
     ///
     /// Note: changing this after signing in will require signing in again, as
@@ -1038,7 +1038,7 @@ impl Client {
 
     /// Performs a sign-in and also (optionally) connects to Collab.
     ///
-    /// Only Zed staff automatically connect to Collab.
+    /// Only Mutex staff automatically connect to Collab.
     pub async fn sign_in_with_optional_connect(
         self: &Arc<Self>,
         try_provider: bool,
@@ -1464,7 +1464,7 @@ impl Client {
                         }
                     }
 
-                    // Start an HTTP server to receive the redirect from Zed's sign-in page.
+                    // Start an HTTP server to receive the redirect from Mutex's sign-in page.
                     let server = tiny_http::Server::http("127.0.0.1:0")
                         .map_err(|e| anyhow!(e).context("failed to bind callback port"))?;
                     let port = server
@@ -1480,8 +1480,8 @@ impl Client {
                         system_id: Option<Arc<str>>,
                     }
 
-                    // Open the Zed sign-in page in the user's browser, with query parameters that indicate
-                    // that the user is signing in from a Zed app running on the same device.
+                    // Open the Mutex sign-in page in the user's browser, with query parameters that indicate
+                    // that the user is signing in from a Mutex app running on the same device.
                     let url = http.build_url(&format!(
                         "/native_app_signin?{}",
                         serde_urlencoded::to_string(&NativeAppSignInQueryParams {
@@ -1623,7 +1623,7 @@ impl Client {
         }
     }
 
-    /// Sends an authenticated request to the Zed LLM service, retrying once
+    /// Sends an authenticated request to the Mutex LLM service, retrying once
     /// with a refreshed token if the server signals that the cached LLM
     /// token is expired or otherwise rejected. Returns the raw response so
     /// callers can inspect headers and stream the body.
@@ -1936,24 +1936,24 @@ impl ProtoClient for Client {
     }
 }
 
-/// prefix for the zed:// url scheme
-pub const ZED_URL_SCHEME: &str = "zed";
+/// prefix for the mutex:// url scheme
+pub const ZED_URL_SCHEME: &str = "mutex";
 
-/// A parsed Zed link that can be handled internally by the application.
+/// A parsed Mutex link that can be handled internally by the application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZedLink {
-    /// Join a channel: `zed.dev/channel/channel-name-123` or `zed://channel/channel-name-123`
+    /// Join a channel: `mutex.dev/channel/channel-name-123` or `mutex://channel/channel-name-123`
     Channel { channel_id: u64 },
-    /// Open channel notes: `zed.dev/channel/channel-name-123/notes` or with heading `notes#heading`
+    /// Open channel notes: `mutex.dev/channel/channel-name-123/notes` or with heading `notes#heading`
     ChannelNotes {
         channel_id: u64,
         heading: Option<String>,
     },
 }
 
-/// Parses the given link into a Zed link.
+/// Parses the given link into a Mutex link.
 ///
-/// Returns a [`Some`] containing the parsed link if the link is a recognized Zed link
+/// Returns a [`Some`] containing the parsed link if the link is a recognized Mutex link
 /// that should be handled internally by the application.
 /// Returns [`None`] for links that should be opened in the browser.
 pub fn parse_zed_link(link: &str, cx: &App) -> Option<ZedLink> {

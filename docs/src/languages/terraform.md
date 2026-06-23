@@ -1,6 +1,6 @@
 ---
 title: Terraform
-description: "Configure Terraform language support in Zed, including language servers, formatting, and debugging."
+description: "Configure Terraform language support in Mutex, including language servers, formatting, and debugging."
 ---
 
 # Terraform

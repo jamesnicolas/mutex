@@ -20,7 +20,7 @@ use util::ResultExt;
 use util::path_list::PathList;
 use zed_actions::agents_sidebar::ToggleThreadSwitcher;
 
-use agent_settings::AgentSettings;
+use agent_settings::{AgentSettings, WindowLayout};
 use settings::SidebarDockPosition;
 use ui::{ContextMenu, right_click_menu};
 
@@ -349,6 +349,8 @@ impl MultiWorkspace {
         workspace.update(cx, |workspace, cx| {
             workspace.set_multi_workspace(weak_self, active_workspace_id.clone(), cx);
         });
+        let sidebar_open = matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_));
+
         Self {
             window_id: window.window_handle().window_id(),
             retained_workspaces: Vec::new(),
@@ -356,7 +358,7 @@ impl MultiWorkspace {
             active_workspace: workspace,
             active_workspace_id,
             sidebar: None,
-            sidebar_open: false,
+            sidebar_open,
             sidebar_overlay: None,
             pending_removal_tasks: Vec::new(),
             _serialize_task: None,
@@ -482,6 +484,19 @@ impl MultiWorkspace {
     /// firing a telemetry event, since this is not a user-initiated action.
     pub(crate) fn restore_open_sidebar(&mut self, cx: &mut Context<Self>) {
         self.apply_open_sidebar(cx);
+    }
+
+    /// Restores the sidebar to closed state from persisted session data without
+    /// firing a telemetry event, since this is not a user-initiated action.
+    pub(crate) fn restore_close_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_open = false;
+        for workspace in self.retained_workspaces.clone() {
+            workspace.update(cx, |workspace, _cx| {
+                workspace.set_sidebar_focus_handle(None);
+            });
+        }
+        self.previous_focus_handle.take();
+        cx.notify();
     }
 
     fn apply_open_sidebar(&mut self, cx: &mut Context<Self>) {

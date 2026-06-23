@@ -59,12 +59,14 @@ pub fn after_release() -> Workflow {
 
 fn rebuild_releases_page() -> NamedJob {
     fn refresh_cloud_releases() -> Step<Run> {
-        named::bash("curl -fX POST \"https://cloud.zed.dev/releases/refresh?expect_tag=$TAG_NAME\"")
+        named::bash(
+            "curl -fX POST \"https://cloud.mutex.dev/releases/refresh?expect_tag=$TAG_NAME\"",
+        )
     }
 
     fn revalidate_zed_dev() -> Step<Run> {
         named::bash(
-            "curl -fX GET \"https://zed.dev/api/revalidate?tag=releases\" -H \"Authorization: Bearer $ZED_DEV_REVALIDATE_TOKEN\"",
+            "curl -fX GET \"https://mutex.dev/api/revalidate?tag=releases\" -H \"Authorization: Bearer $ZED_DEV_REVALIDATE_TOKEN\"",
         )
         .add_env(("ZED_DEV_REVALIDATE_TOKEN", vars::ZED_DEV_REVALIDATE_TOKEN))
     }
@@ -82,9 +84,9 @@ fn post_to_discord(deps: &[&NamedJob]) -> NamedJob {
     fn get_release_url() -> Step<Run> {
         named::bash(
             r#"if [ "$IS_PRERELEASE" == "true" ]; then
-    URL="https://zed.dev/releases/preview"
+    URL="https://mutex.dev/releases/preview"
 else
-    URL="https://zed.dev/releases/stable"
+    URL="https://mutex.dev/releases/stable"
 fi
 
 echo "URL=$URL" >> "$GITHUB_OUTPUT"
@@ -103,7 +105,7 @@ echo "URL=$URL" >> "$GITHUB_OUTPUT"
         .add_with((
             "stringToTruncate",
             format!(
-                "📣 Zed [{TAG_NAME}](<${{{{ steps.get-release-url.outputs.URL }}}}>)  was just released!\n\n{RELEASE_BODY}\n"
+                "📣 Mutex [{TAG_NAME}](<${{{{ steps.get-release-url.outputs.URL }}}}>)  was just released!\n\n{RELEASE_BODY}\n"
             ),
         ))
         .add_with(("maxLength", 2000))
@@ -151,9 +153,9 @@ fn publish_winget() -> NamedJob {
 
     fn set_package_name() -> (Step<Run>, StepOutput) {
         let script = r#"if ($env:IS_PRERELEASE -eq "true") {
-    $PACKAGE_NAME = "ZedIndustries.Zed.Preview"
+    $PACKAGE_NAME = "ZedIndustries.Mutex.Preview"
 } else {
-    $PACKAGE_NAME = "ZedIndustries.Zed"
+    $PACKAGE_NAME = "ZedIndustries.Mutex"
 }
 
 echo "PACKAGE_NAME=$PACKAGE_NAME" >> $env:GITHUB_OUTPUT

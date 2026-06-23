@@ -1430,7 +1430,7 @@ impl SshSocket {
                 "AMD64" => RemoteArch::X86_64,
                 "ARM64" => RemoteArch::Aarch64,
                 arch => anyhow::bail!(
-                    "Prebuilt remote servers are not yet available for windows-{arch}. See https://zed.dev/docs/remote-development"
+                    "Prebuilt remote servers are not yet available for windows-{arch}. See https://mutex.dev/docs/remote-development"
                 ),
             },
         })
@@ -2098,7 +2098,7 @@ mod tests {
     #[test]
     fn test_build_command_quotes_env_assignment() -> Result<()> {
         let mut input_env = HashMap::default();
-        input_env.insert("ZED$(echo foo)".to_string(), "value".to_string());
+        input_env.insert("MUTEX$(echo foo)".to_string(), "value".to_string());
 
         let command = build_command_posix(
             Some("remote_program".to_string()),
@@ -2120,7 +2120,7 @@ mod tests {
             .last()
             .context("missing remote command argument")?;
         assert!(
-            remote_command.contains("exec env 'ZED$(echo foo)=value' remote_program"),
+            remote_command.contains("exec env 'MUTEX$(echo foo)=value' remote_program"),
             "expected env assignment to be quoted, got: {remote_command}"
         );
 

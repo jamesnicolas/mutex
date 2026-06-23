@@ -780,7 +780,7 @@ fn handle_postprocessing() -> Result<()> {
 
         title_tag_contents
             .trim()
-            .strip_suffix("- Zed")
+            .strip_suffix("- Mutex")
             .unwrap_or(title_tag_contents)
             .trim()
             .to_string()

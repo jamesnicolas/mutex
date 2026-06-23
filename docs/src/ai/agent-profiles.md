@@ -1,17 +1,17 @@
 ---
-title: Agent Profiles - Zed
-description: Configure Zed Agent profiles for model selection, built-in tool availability, and MCP tool availability.
+title: Agent Profiles - Mutex
+description: Configure Mutex Agent profiles for model selection, built-in tool availability, and MCP tool availability.
 ---
 
 # Agent Profiles
 
-Agent profiles control how the [Zed Agent](./zed-agent.md) behaves in a thread. A profile can set a default model and choose which built-in tools and MCP tools are available.
+Agent profiles control how the [Mutex Agent](./zed-agent.md) behaves in a thread. A profile can set a default model and choose which built-in tools and MCP tools are available.
 
 Profiles do not decide whether a tool call is allowed automatically. Use [Tool Permissions](./tool-permissions.md) to control allow, deny, and confirm behavior.
 
 ## Built-in Profiles {#built-in-profiles}
 
-Zed includes three built-in profiles:
+Mutex includes three built-in profiles:
 
 - `Write`: enables tools for reading, editing, and running commands.
 - `Ask`: focuses on read-only codebase questions.
@@ -51,7 +51,7 @@ Profiles are stored under `agent.profiles` in your settings.
         "enable_all_context_servers": false,
         "context_servers": {},
         "default_model": {
-          "provider": "zed.dev",
+          "provider": "mutex.dev",
           "model": "claude-sonnet-4-5"
         }
       }
@@ -69,8 +69,8 @@ The exact model IDs and provider IDs depend on your configured [LLM Providers](.
 | Agent profile    | Whether a tool is available in a profile                              | Disable `terminal` in a read-only profile |
 | Tool permissions | Whether a permission-gated tool call is allowed, denied, or confirmed | Always confirm `terminal` commands        |
 
-If a tool is not available in the active profile, the Zed Agent cannot use it. If the tool is available and permission-gated, [Tool Permissions](./tool-permissions.md) still controls whether the tool call requires approval.
+If a tool is not available in the active profile, the Mutex Agent cannot use it. If the tool is available and permission-gated, [Tool Permissions](./tool-permissions.md) still controls whether the tool call requires approval.
 
 ## Agent Path Boundaries {#agent-path-boundaries}
 
-Agent profiles apply to the Zed Agent. External Agents and Terminal Threads do not use Zed Agent profiles unless their integration explicitly supports similar behavior.
+Agent profiles apply to the Mutex Agent. External Agents and Terminal Threads do not use Mutex Agent profiles unless their integration explicitly supports similar behavior.

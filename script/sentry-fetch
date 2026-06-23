@@ -3,7 +3,7 @@
 
 Usage:
     script/sentry-fetch <issue-short-id-or-numeric-id>
-    script/sentry-fetch ZED-4VS
+    script/sentry-fetch MUTEX-4VS
     script/sentry-fetch 7243282041
 
 Authentication (checked in order):
@@ -31,7 +31,7 @@ def main():
     )
     parser.add_argument(
         "issue",
-        help="Sentry issue short ID (e.g. ZED-4VS) or numeric issue ID",
+        help="Sentry issue short ID (e.g. MUTEX-4VS) or numeric issue ID",
     )
     args = parser.parse_args()
 

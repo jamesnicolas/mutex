@@ -193,7 +193,7 @@ zed::register_extension!(TestExtension);
 /// Removes newlines from the completion detail.
 ///
 /// The Gleam LSP can return types containing newlines, which causes formatting
-/// issues within the Zed completions menu.
+/// issues within the Mutex completions menu.
 fn strip_newlines_from_detail(detail: &str) -> String {
     let without_newlines = detail
         .replace("->\n  ", "-> ")

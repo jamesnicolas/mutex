@@ -83,7 +83,7 @@ fn generate_markdown(seed: u64, target_size: usize) -> String {
 
     markdown.push_str("---\n");
     markdown.push_str("title: Markdown renderer benchmark\n");
-    markdown.push_str("author: Zed benchmark\n");
+    markdown.push_str("author: Mutex benchmark\n");
     markdown.push_str("---\n\n");
 
     while markdown.len() < target_size {
@@ -157,7 +157,7 @@ fn push_sentence(markdown: &mut String, rng: &mut StdRng) {
                 markdown.push(')');
             }
             4 => {
-                markdown.push_str("https://zed.dev/");
+                markdown.push_str("https://mutex.dev/");
                 markdown.push_str(random_identifier(rng));
             }
             _ => markdown.push_str(random_word(rng)),

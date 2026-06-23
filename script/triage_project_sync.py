@@ -4,7 +4,7 @@ triage_project_sync.py
 ======================
 
 Sync triage state from `zed-industries/zed` issues into the
-"Zed weekly triage" project (#84).
+"Mutex weekly triage" project (#84).
 
 Auto-derives `Status`, `Stale since`, `Aged?`, `Intake week` from issue labels
 + comment activity + assignees. Mutates the project to

@@ -1,4 +1,4 @@
-"""Harbor agent wrapper for Zed's eval-cli binary.
+"""Harbor agent wrapper for Mutex's eval-cli binary.
 
 Usage:
     # Build eval-cli locally first:
@@ -28,10 +28,10 @@ from harbor.models.agent.context import AgentContext
 
 
 class ZedAgent(BaseInstalledAgent):
-    """Runs Zed's headless AI agent (eval-cli) to solve tasks.
+    """Runs Mutex's headless AI agent (eval-cli) to solve tasks.
 
     The eval-cli binary boots a headless GPUI application and uses the same
-    NativeAgent + AcpThread pipeline as the production Zed editor, driving
+    NativeAgent + AcpThread pipeline as the production Mutex editor, driving
     the full agentic loop (tool calls, subagents, retries) without a GUI.
     """
 
@@ -203,7 +203,7 @@ class ZedAgent(BaseInstalledAgent):
             self.logger.warning("Node.js installation failed (non-fatal): %s", exc)
 
     async def _install_lsps(self, environment: BaseEnvironment) -> None:
-        """Pre-install language servers so Zed doesn't download them at runtime.
+        """Pre-install language servers so Mutex doesn't download them at runtime.
 
         Each LSP is installed independently so one failure doesn't block the rest.
         """

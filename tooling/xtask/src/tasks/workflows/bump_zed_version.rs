@@ -149,7 +149,7 @@ fn bump_main(
             .add_step(steps::install_cargo_edit())
             .add_step(bump_version())
             .add_step(steps::CreatePrStep::new(
-                format!("Bump Zed to v{}", outputs.next_version),
+                format!("Bump Mutex to v{}", outputs.next_version),
                 &outputs.pr_branch,
                 &token,
             )),

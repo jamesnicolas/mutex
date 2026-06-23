@@ -82,7 +82,7 @@ impl fmt::Display for ReviewFailure {
             Self::Unreviewed => formatter
                 .write_str("No qualifying organization approval found for the pull request"),
             Self::UnexpectedZippyAction(failure) => {
-                write!(formatter, "Validating Zed Zippy change failed: {failure}")
+                write!(formatter, "Validating Mutex Zippy change failed: {failure}")
             }
             Self::Other(error) => write!(formatter, "Failed to inspect review state: {error}"),
         }
@@ -221,7 +221,7 @@ impl Reporter {
 
         let pull_request = self
             .github_client
-            .get_pull_request(&Repository::ZED, pr_number)
+            .get_pull_request(&Repository::MUTEX, pr_number)
             .await?;
 
         if let Some(approval) = self
@@ -258,7 +258,7 @@ impl Reporter {
 
         let commit_data = self
             .github_client
-            .get_commit_metadata(&Repository::ZED, &[commit.sha()])
+            .get_commit_metadata(&Repository::MUTEX, &[commit.sha()])
             .await?;
 
         let metadata =
@@ -298,7 +298,7 @@ impl Reporter {
 
         let files = self
             .github_client
-            .get_commit_files(&Repository::ZED, commit.sha())
+            .get_commit_files(&Repository::MUTEX, commit.sha())
             .await?;
 
         change_kind
@@ -318,7 +318,7 @@ impl Reporter {
         if commit.co_authors().is_some()
             && let Some(commit_authors) = self
                 .github_client
-                .get_commit_metadata(&Repository::ZED, &[commit.sha()])
+                .get_commit_metadata(&Repository::MUTEX, &[commit.sha()])
                 .await?
                 .get(commit.sha())
                 .and_then(|authors| authors.co_authors())
@@ -328,7 +328,7 @@ impl Reporter {
                 if let Some(github_login) = co_author.user()
                     && self
                         .github_client
-                        .check_repo_write_permission(&Repository::ZED, github_login)
+                        .check_repo_write_permission(&Repository::MUTEX, github_login)
                         .await?
                 {
                     org_co_authors.push(co_author.clone());
@@ -350,7 +350,7 @@ impl Reporter {
     ) -> Result<Option<ReviewSuccess>, ReviewFailure> {
         let reviews = self
             .github_client
-            .get_pull_request_reviews(&Repository::ZED, pull_request.number)
+            .get_pull_request_reviews(&Repository::MUTEX, pull_request.number)
             .await?;
 
         let qualifying_reviews = reviews
@@ -370,7 +370,7 @@ impl Reporter {
     ) -> Result<Option<ReviewSuccess>, ReviewFailure> {
         let comments = self
             .github_client
-            .get_pull_request_comments(&Repository::ZED, pull_request.number)
+            .get_pull_request_comments(&Repository::MUTEX, pull_request.number)
             .await?;
 
         let qualifying_comments = comments
@@ -605,7 +605,7 @@ mod tests {
 
     fn zippy_author() -> serde_json::Value {
         serde_json::json!({
-            "name": "Zed Zippy",
+            "name": "Mutex Zippy",
             "email": ZED_ZIPPY_EMAIL,
             "user": { "login": ZED_ZIPPY_LOGIN }
         })
@@ -715,7 +715,7 @@ mod tests {
                 org_members: vec![],
                 commit: make_commit(
                     "abc12345abc12345",
-                    "Zed Zippy",
+                    "Mutex Zippy",
                     ZED_ZIPPY_EMAIL,
                     "Bump to 0.230.2 for @cole-miller",
                     "",
@@ -751,7 +751,7 @@ mod tests {
                 org_members: vec![],
                 commit: make_commit(
                     "abc12345abc12345",
-                    "Zed Zippy",
+                    "Mutex Zippy",
                     ZED_ZIPPY_EMAIL,
                     "v0.233.x stable for @cole-miller",
                     "",
@@ -1045,7 +1045,7 @@ mod tests {
         let result = TestScenario::zippy_version_bump()
             .with_commit(make_commit(
                 "abc12345abc12345",
-                "Zed Zippy",
+                "Mutex Zippy",
                 ZED_ZIPPY_EMAIL,
                 "Bump to 0.230.2",
                 "",
@@ -1232,7 +1232,7 @@ mod tests {
         let result = TestScenario::single_commit()
             .with_commit(make_commit(
                 "abc12345abc12345",
-                "Zed Zippy",
+                "Mutex Zippy",
                 ZED_ZIPPY_EMAIL,
                 "Some change (#1234)",
                 "",

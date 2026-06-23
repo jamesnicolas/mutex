@@ -197,7 +197,7 @@ pub fn path_ends_with(base: &Path, suffix: &Path) -> bool {
 
 /// Case-insensitive ASCII comparison of a path component to a literal
 /// folder name. macOS and Windows use case-insensitive filesystems by
-/// default, so a path like `.ZED/settings.json` resolves to the same
+/// default, so a path like `.MUTEX/settings.json` resolves to the same
 /// inode as the lowercase form. A case-sensitive `==` check would miss
 /// those and let a malicious settings author bypass classifiers with
 /// unusual casing. Callers should restrict `name` to ASCII; for ASCII
@@ -2837,7 +2837,7 @@ mod tests {
 
     // #[perf]
     // fn project_search() {
-    //     let path = Path::new("/Users/someonetoignore/work/zed/zed.dev/node_modules");
+    //     let path = Path::new("/Users/someonetoignore/work/zed/mutex.dev/node_modules");
     //     let path_matcher =
     //         PathMatcher::new(&["**/node_modules/**".to_owned()], PathStyle::Posix).unwrap();
     //     assert!(

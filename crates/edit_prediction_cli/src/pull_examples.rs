@@ -23,9 +23,9 @@ pub(crate) const SNOWFLAKE_SUCCESS_CODE: &str = "090001";
 pub(crate) const SNOWFLAKE_ASYNC_IN_PROGRESS_CODE: &str = "333334";
 const SNOWFLAKE_TIMEOUT_CODE: &str = "000630";
 
-/// Minimum Zed version for filtering captured examples.
+/// Minimum Mutex version for filtering captured examples.
 /// For example, `MinCaptureVersion { major: 0, minor: 224, patch: 1 }` means only pull
-/// examples where `zed_version >= 0.224.1`. The `major` component is required because Zed
+/// examples where `zed_version >= 0.224.1`. The `major` component is required because Mutex
 /// moved from the `0.<minor>.<patch>` scheme to `1.<minor>.<patch>`; comparing on `minor`
 /// alone would exclude all `1.*` versions (whose `minor` resets to small values).
 #[derive(Clone, Copy, Debug)]

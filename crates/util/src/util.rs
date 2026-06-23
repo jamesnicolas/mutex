@@ -220,8 +220,8 @@ pub fn prevent_root_execution() {
     if is_root && !allow_root {
         eprintln!(
             "\
-Error: Running Zed as root or via sudo is unsupported.
-       Doing so (even once) may subtly break things for all subsequent non-root usage of Zed.
+Error: Running Mutex as root or via sudo is unsupported.
+       Doing so (even once) may subtly break things for all subsequent non-root usage of Mutex.
        It is untested and not recommended, don't complain when things break.
        If you wish to proceed anyways, set `ZED_ALLOW_ROOT=true` in your environment."
         );
@@ -304,7 +304,7 @@ pub fn get_shell_safe_zed_path(shell_kind: shell::ShellKind) -> anyhow::Result<S
 
     zed_path
         .try_shell_safe(shell_kind)
-        .context("Failed to shell-escape Zed executable path.")
+        .context("Failed to shell-escape Mutex executable path.")
 }
 
 /// Returns a path for the zed cli executable, this function
@@ -363,9 +363,9 @@ pub async fn load_login_shell_environment() -> Result<()> {
         .await
         .with_context(|| format!("capturing environment with {:?}", get_system_shell()))?
     {
-        // Skip SHLVL to prevent it from polluting Zed's process environment.
+        // Skip SHLVL to prevent it from polluting Mutex's process environment.
         // The login shell used for env capture increments SHLVL, and if we propagate it,
-        // terminals spawned by Zed will inherit it and increment again, causing SHLVL
+        // terminals spawned by Mutex will inherit it and increment again, causing SHLVL
         // to start at 2 instead of 1 (and increase by 2 on each reload).
         if name == "SHLVL" {
             continue;

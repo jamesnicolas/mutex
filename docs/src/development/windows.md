@@ -1,15 +1,15 @@
 ---
-title: Building Zed for Windows
-description: "Guide to building zed for windows for Zed development."
+title: Building Mutex for Windows
+description: "Guide to building zed for windows for Mutex development."
 ---
 
-# Building Zed for Windows
+# Building Mutex for Windows
 
 > The following commands may be executed in any shell.
 
 ## Repository
 
-Clone the [Zed repository](https://github.com/zed-industries/zed).
+Clone the [Mutex repository](https://github.com/zed-industries/zed).
 
 ## Dependencies
 
@@ -21,7 +21,7 @@ Clone the [Zed repository](https://github.com/zed-industries/zed).
 - Install the Windows 11 or 10 SDK for your system, and make sure at least `Windows 10 SDK version 2104 (10.0.20348.0)` is installed. You can download it from the [Windows SDK Archive](https://developer.microsoft.com/windows/downloads/windows-sdk/).
 - Install [CMake](https://cmake.org/download) (required by [a dependency](https://docs.rs/wasmtime-c-api-impl/latest/wasmtime_c_api/)). Or you can install it through Visual Studio Installer, then manually add the `bin` directory to your `PATH`, for example: `C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
 
-If you cannot compile Zed, make sure a Visual Studio installation includes at least the following components:
+If you cannot compile Mutex, make sure a Visual Studio installation includes at least the following components:
 
 ```json
 {
@@ -93,7 +93,7 @@ After this, restart the `postgresql` service. Press `Win`+`R` to open the Run di
 
 ## Building from source
 
-Once you have the dependencies installed, you can build Zed using [Cargo](https://doc.rust-lang.org/cargo/).
+Once you have the dependencies installed, you can build Mutex using [Cargo](https://doc.rust-lang.org/cargo/).
 
 For a debug build:
 
@@ -113,11 +113,11 @@ And to run the tests:
 cargo test --workspace
 ```
 
-> **Note:** Visual regression tests are currently macOS-only and require Screen Recording permission. See [Building Zed for macOS](./macos.md#visual-regression-tests) for details.
+> **Note:** Visual regression tests are currently macOS-only and require Screen Recording permission. See [Building Mutex for macOS](./macos.md#visual-regression-tests) for details.
 
 ## Installing from msys2
 
-Zed does not support unofficial MSYS2 Zed packages built for Mingw-w64. Please report any issues you may have with [mingw-w64-zed](https://packages.msys2.org/base/mingw-w64-zed) to [msys2/MINGW-packages/issues](https://github.com/msys2/MINGW-packages/issues?q=is%3Aissue+is%3Aopen+zed).
+Mutex does not support unofficial MSYS2 Mutex packages built for Mingw-w64. Please report any issues you may have with [mingw-w64-zed](https://packages.msys2.org/base/mingw-w64-zed) to [msys2/MINGW-packages/issues](https://github.com/msys2/MINGW-packages/issues?q=is%3Aissue+is%3Aopen+zed).
 
 Please refer to [MSYS2 documentation](https://www.msys2.org/docs/ides-editors/#zed) first.
 
@@ -125,7 +125,7 @@ Please refer to [MSYS2 documentation](https://www.msys2.org/docs/ides-editors/#z
 
 ### Setting `RUSTFLAGS` env var breaks builds
 
-If you set the `RUSTFLAGS` env var, it will override the `rustflags` settings in `.cargo/config.toml` which is required to properly build Zed.
+If you set the `RUSTFLAGS` env var, it will override the `rustflags` settings in `.cargo/config.toml` which is required to properly build Mutex.
 
 Because these settings change over time, the resulting build errors may vary from linker failures to other hard-to-diagnose errors.
 
@@ -150,7 +150,7 @@ rustflags = [
 ]
 ```
 
-Or, create a new `.cargo/config.toml` in the parent directory of the Zed repo (see below). This is useful in CI because you do not need to edit the repo's original `.cargo/config.toml`.
+Or, create a new `.cargo/config.toml` in the parent directory of the Mutex repo (see below). This is useful in CI because you do not need to edit the repo's original `.cargo/config.toml`.
 
 ```
 upper_dir
@@ -179,13 +179,13 @@ Try `cargo clean` and `cargo build`.
 
 This error can happen if you are using the "rust-lld.exe" linker. Consider trying a different linker.
 
-If you are using a global config, consider moving the Zed repository to a nested directory and add a `.cargo/config.toml` with a custom linker config in the parent directory.
+If you are using a global config, consider moving the Mutex repository to a nested directory and add a `.cargo/config.toml` with a custom linker config in the parent directory.
 
 See this issue for more information [#12041](https://github.com/zed-industries/zed/issues/12041)
 
 ### Invalid RC path selected
 
-Sometimes, depending on the security rules applied to your laptop, you may get the following error while compiling Zed:
+Sometimes, depending on the security rules applied to your laptop, you may get the following error while compiling Mutex:
 
 ```
 error: failed to run custom build command for `zed(C:\Users\USER\src\zed\crates\zed)`
@@ -243,20 +243,20 @@ For more information on this, please see [win32 docs](https://learn.microsoft.co
 
 ### Graphics issues
 
-#### Zed fails to launch
+#### Mutex fails to launch
 
-Zed currently uses Vulkan as its graphics API on Windows. If Zed fails to launch, Vulkan is a common cause.
+Mutex currently uses Vulkan as its graphics API on Windows. If Mutex fails to launch, Vulkan is a common cause.
 
-You can check the Zed log at:
-`C:\Users\YOU\AppData\Local\Zed\logs\Zed.log`
+You can check the Mutex log at:
+`C:\Users\YOU\AppData\Local\Mutex\logs\Mutex.log`
 
 If you see messages like:
 
-- `Zed failed to open a window: NoSupportedDeviceFound`
+- `Mutex failed to open a window: NoSupportedDeviceFound`
 - `ERROR_INITIALIZATION_FAILED`
 - `GPU Crashed`
 - `ERROR_SURFACE_LOST_KHR`
 
 Vulkan may not be working correctly on your system. Updating GPU drivers often resolves this.
 
-If there's nothing Vulkan-related in the logs and you happen to have Bandicam installed, try uninstalling it. Zed is currently not compatible with Bandicam.
+If there's nothing Vulkan-related in the logs and you happen to have Bandicam installed, try uninstalling it. Mutex is currently not compatible with Bandicam.

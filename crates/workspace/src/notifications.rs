@@ -1192,7 +1192,7 @@ pub mod simple_message_notification {
             });
 
             let with_primary_action = cx.new(|cx| {
-                MessageNotification::new("A new version of Zed is available for download.", cx)
+                MessageNotification::new("A new version of Mutex is available for download.", cx)
                     .with_title("Update Available")
                     .primary_message("Restart Now")
                     .primary_icon(IconName::ArrowCircle)
@@ -1295,7 +1295,7 @@ pub mod simple_message_notification {
                     "Linux desktop portal initialization failed.".into()
                 }
                 fn secondary_message(&self) -> Option<SharedString> {
-                    Some("Zed needs an xdg-desktop-portal implementation to open files.".into())
+                    Some("Mutex needs an xdg-desktop-portal implementation to open files.".into())
                 }
                 fn severity(&self) -> ErrorSeverity {
                     ErrorSeverity::Critical
@@ -1303,7 +1303,7 @@ pub mod simple_message_notification {
                 fn primary_action(&self) -> ErrorAction {
                     ErrorAction::link(
                         "See Docs",
-                        "https://zed.dev/docs/linux#i-cant-open-any-files",
+                        "https://mutex.dev/docs/linux#i-cant-open-any-files",
                     )
                 }
             }
@@ -1313,13 +1313,13 @@ pub mod simple_message_notification {
             struct UpdateRequiredError;
             impl WorkspaceError for UpdateRequiredError {
                 fn primary_message(&self) -> SharedString {
-                    "An update is required to continue using Zed AI.".into()
+                    "An update is required to continue using Mutex AI.".into()
                 }
                 fn severity(&self) -> ErrorSeverity {
                     ErrorSeverity::Critical
                 }
                 fn primary_action(&self) -> ErrorAction {
-                    ErrorAction::link("Update Zed", "https://zed.dev/releases")
+                    ErrorAction::link("Update Mutex", "https://mutex.dev/releases")
                 }
                 fn secondary_action(&self) -> Option<ErrorAction> {
                     Some(ErrorAction::dismiss())

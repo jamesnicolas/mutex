@@ -2,25 +2,25 @@
 
 const HELP = `
 USAGE
-  zed-local  [options]  [zed args]
+  mutex-local  [options]  [mutex args]
 
 SUMMARY
-  Runs 1-6 instances of Zed using a locally-running collaboration server.
-  Each instance of Zed will be signed in as a different user specified in
+  Runs 1-6 instances of Mutex using a locally-running collaboration server.
+  Each instance of Mutex will be signed in as a different user specified in
   either \`.admins.json\` or \`.admins.default.json\`.
 
   All arguments after the initial options will be passed through to the first
-  instance of Zed. This can be used to test SSH remoting along with collab, like
+  instance of Mutex. This can be used to test SSH remoting along with collab, like
   so:
 
-  $ script/zed-local -2 ssh://your-ssh-uri-here
+  $ script/mutex-local -2 ssh://your-ssh-uri-here
 
 OPTIONS
   --help            Print this help message
-  --release         Build Zed in release mode
-  -2, -3, -4, ...   Spawn multiple Zed instances, with their windows tiled.
-  --top             Arrange the Zed windows so they take up the top half of the screen.
-  --stable          Use stable Zed release installed on local machine for all instances (except for the first one).
+  --release         Build Mutex in release mode
+  -2, -3, -4, ...   Spawn multiple Mutex instances, with their windows tiled.
+  --top             Arrange the Mutex windows so they take up the top half of the screen.
+  --stable          Use stable Mutex release installed on local machine for all instances (except for the first one).
   --preview         Like --stable, but uses the locally-installed preview release instead.
 `.trim();
 
@@ -164,10 +164,10 @@ if (user) {
 }
 
 let buildArgs = ["build"];
-let zedBinary = "target/debug/zed";
+let zedBinary = "target/debug/mutex";
 if (isReleaseMode) {
   buildArgs.push("--release");
-  zedBinary = "target/release/zed";
+  zedBinary = "target/release/mutex";
 }
 
 try {
@@ -194,9 +194,9 @@ setTimeout(() => {
     const size = [instanceWidth, instanceHeight].join(",");
     let binaryPath = zedBinary;
     if (i != 0 && othersOnStable) {
-      binaryPath = "/Applications/Zed.app/Contents/MacOS/zed";
+      binaryPath = "/Applications/Mutex.app/Contents/MacOS/mutex";
     } else if (i != 0 && othersOnPreview) {
-      binaryPath = "/Applications/Zed Preview.app/Contents/MacOS/zed";
+      binaryPath = "/Applications/Mutex Preview.app/Contents/MacOS/mutex";
     }
     spawn(binaryPath, i == 0 ? args : [], {
       stdio: "inherit",

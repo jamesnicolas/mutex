@@ -1,6 +1,6 @@
 ---
 title: Default Key Bindings
-description: "Reference for Zed's default key bindings."
+description: "Reference for Mutex's default key bindings."
 ---
 
 # Default Key Bindings

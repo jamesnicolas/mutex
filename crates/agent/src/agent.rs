@@ -2546,7 +2546,7 @@ fn model_id_to_selection(model_id: &AgentModelId, cx: &App) -> LanguageModelSele
     agent_settings::language_model_to_selection(&resolved, current_user_selection.as_ref())
 }
 
-pub static ZED_AGENT_ID: LazyLock<AgentId> = LazyLock::new(|| AgentId::new("Zed Agent"));
+pub static ZED_AGENT_ID: LazyLock<AgentId> = LazyLock::new(|| AgentId::new("Mutex Agent"));
 
 impl acp_thread::AgentConnection for NativeAgentConnection {
     fn agent_id(&self) -> AgentId {
@@ -3107,7 +3107,7 @@ impl ThreadEnvironment for NativeThreadEnvironment {
         // Linux, and via WSL on Windows) already mounts a fresh, writable
         // `tmpfs` over `/tmp`, so the environment looks like a normal
         // filesystem with no special `$TMPDIR` (which would only make the
-        // sandbox more obviously Zed-specific). On Windows a per-thread
+        // sandbox more obviously Mutex-specific). On Windows a per-thread
         // `$TMPDIR` would also be a Windows path that's meaningless inside
         // WSL, and adding it to the writable scope would bind a stray
         // `/mnt/<drive>/...` path.

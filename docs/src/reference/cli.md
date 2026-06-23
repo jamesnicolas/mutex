@@ -1,19 +1,19 @@
 ---
 title: CLI Reference
-description: "Reference for Zed's command-line interface (CLI), including opening files and directories, integrating with tools, and controlling Zed from scripts."
+description: "Reference for Mutex's command-line interface (CLI), including opening files and directories, integrating with tools, and controlling Mutex from scripts."
 ---
 
 # CLI Reference
 
-Use Zed's command-line interface (CLI) to open files and directories, integrate with other tools, and control Zed from scripts.
+Use Mutex's command-line interface (CLI) to open files and directories, integrate with other tools, and control Mutex from scripts.
 
 ## Installation
 
 **macOS:** Run the {#action cli::InstallCliBinary} command from the command palette ({#kb command_palette::Toggle}) to install the `zed` CLI to `/usr/local/bin/zed`.
 
-**Linux:** The CLI is included with Zed packages. The binary name may vary by distribution (commonly `zed` or `zeditor`).
+**Linux:** The CLI is included with Mutex packages. The binary name may vary by distribution (commonly `zed` or `zeditor`).
 
-**Windows:** The CLI is included with Zed. Add Zed's installation directory to your PATH, or use the full path to `zed.exe`.
+**Windows:** The CLI is included with Mutex. Add Mutex's installation directory to your PATH, or use the full path to `zed.exe`.
 
 ## Usage
 
@@ -54,11 +54,11 @@ zed myfile.txt:42:10     # Open at line 42, column 10
 
 Wait for all opened files to be closed before the CLI exits. When opening a directory, waits until the window is closed.
 
-This is useful for integrating Zed with tools that expect an editor to block until editing is complete (e.g., `git commit`):
+This is useful for integrating Mutex with tools that expect an editor to block until editing is complete (e.g., `git commit`):
 
 ```sh
 export EDITOR="zed --wait"
-git commit  # Opens Zed and waits for you to close the commit message file
+git commit  # Opens Mutex and waits for you to close the commit message file
 ```
 
 ### `-n`, `--new`
@@ -98,7 +98,7 @@ zed --diff old.rs new.rs --diff old2.rs new2.rs
 
 ### `--foreground`
 
-Run Zed in the foreground, keeping the terminal attached. Useful for debugging:
+Run Mutex in the foreground, keeping the terminal attached. Useful for debugging:
 
 ```sh
 zed --foreground
@@ -114,13 +114,13 @@ zed --user-data-dir ~/.zed-custom
 
 Default locations:
 
-- **macOS:** `~/Library/Application Support/Zed`
+- **macOS:** `~/Library/Application Support/Mutex`
 - **Linux:** `$XDG_DATA_HOME/zed` (typically `~/.local/share/zed`)
-- **Windows:** `%LOCALAPPDATA%\Zed`
+- **Windows:** `%LOCALAPPDATA%\Mutex`
 
 ### `-v`, `--version`
 
-Print Zed's version and exit:
+Print Mutex's version and exit:
 
 ```sh
 zed --version
@@ -184,7 +184,7 @@ eval "$(zed --completions zsh)"
 
 ### `--uninstall`
 
-Uninstall Zed and remove all related files (macOS and Linux only):
+Uninstall Mutex and remove all related files (macOS and Linux only):
 
 ```sh
 zed --uninstall
@@ -192,10 +192,10 @@ zed --uninstall
 
 ### `--zed <PATH>`
 
-Specify a custom path to the Zed application or binary:
+Specify a custom path to the Mutex application or binary:
 
 ```sh
-zed --zed /path/to/Zed.app myfile.txt
+zed --zed /path/to/Mutex.app myfile.txt
 ```
 
 ## Reading from Standard Input
@@ -208,14 +208,14 @@ cat myfile.txt | zed -
 ps aux | zed -
 ```
 
-This creates a temporary file with the stdin content and opens it in Zed.
+This creates a temporary file with the stdin content and opens it in Mutex.
 
 ## URL Handling
 
-The CLI can open `zed://`, `file://`, and `ssh://` URLs:
+The CLI can open `mutex://`, `file://`, and `ssh://` URLs:
 
 ```sh
-zed zed://settings
+zed mutex://settings
 zed file:///Users/whatever/.zshrc
 zed ssh://me@example.com/abs/path
 zed ssh://me@example.com:/abs/path
@@ -223,9 +223,9 @@ zed ssh://me@example.com/~/project
 zed ssh://me@example.com:~/project
 ```
 
-## Using Zed as Your Default Editor
+## Using Mutex as Your Default Editor
 
-Set Zed as your default editor for Git and other tools:
+Set Mutex as your default editor for Git and other tools:
 
 ```sh
 export EDITOR="zed --wait"
@@ -246,7 +246,7 @@ zed --nightly myfile.txt
 
 ## WSL Integration (Windows)
 
-On Windows, the CLI supports opening paths from WSL distributions. This is handled automatically when launching Zed from within WSL.
+On Windows, the CLI supports opening paths from WSL distributions. This is handled automatically when launching Mutex from within WSL.
 
 ## Exit Codes
 

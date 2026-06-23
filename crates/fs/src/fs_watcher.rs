@@ -1013,7 +1013,7 @@ impl GlobalWatcher {
             return Ok(());
         }
 
-        // CORE excludes Access events, which Zed discards anyway. Without this,
+        // CORE excludes Access events, which Mutex discards anyway. Without this,
         // the default mask subscribes to inotify OPEN/CLOSE_* on Linux, so every
         // file read in a watched directory would queue events, increasing the
         // risk of queue overflows (and thus full rescans) under read-heavy

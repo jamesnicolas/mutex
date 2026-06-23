@@ -20,7 +20,7 @@ pub struct OpenBrowser {
     pub url: Arc<str>,
 }
 
-/// Opens a zed:// URL within the application.
+/// Opens a mutex:// URL within the application.
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = zed)]
 #[serde(deny_unknown_fields)]
@@ -61,13 +61,13 @@ actions!(
         OpenServerSettings,
         /// Quits the application.
         Quit,
-        /// Shows information about Zed.
+        /// Shows information about Mutex.
         About,
         /// Opens the documentation website.
         OpenDocs,
         /// Views open source licenses.
         OpenLicenses,
-        /// Opens the Zed status page.
+        /// Opens the Mutex status page.
         OpenStatusPage,
         /// Opens the telemetry log.
         OpenTelemetryLog,
@@ -295,7 +295,7 @@ pub enum NewWorktreeBranchTarget {
 #[action(namespace = git)]
 #[serde(deny_unknown_fields)]
 pub struct CreateWorktree {
-    /// When this is None, Zed will randomly generate a worktree name.
+    /// When this is None, Mutex will randomly generate a worktree name.
     pub worktree_name: Option<String>,
     pub branch_target: NewWorktreeBranchTarget,
 }
@@ -403,7 +403,7 @@ pub mod feedback {
     actions!(
         feedback,
         [
-            /// Opens email client to send feedback to Zed support.
+            /// Opens email client to send feedback to Mutex support.
             EmailZed,
             /// Opens the bug report form.
             FileBugReport,
@@ -744,7 +744,7 @@ pub mod outline {
 actions!(
     zed_predict_onboarding,
     [
-        /// Opens the Zed Predict onboarding modal.
+        /// Opens the Mutex Predict onboarding modal.
         OpenZedPredictOnboarding
     ]
 );

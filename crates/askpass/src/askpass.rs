@@ -32,7 +32,7 @@ use util::{paths::PathExt, shell::ShellKind};
 /// On Unix and remote servers, this defaults to the current executable.
 /// On Windows, this must be set to the CLI variant of zed via set_askpass_program(),
 /// because SSH_ASKPASS must point to a directly executable binary. The CLI binary
-/// handles the ZED_ASKPASS_SOCKET env var to communicate with Zed over a Unix socket
+/// handles the ZED_ASKPASS_SOCKET env var to communicate with Mutex over a Unix socket
 /// without needing a wrapper script.
 static ASKPASS_PROGRAM: OnceLock<std::path::PathBuf> = OnceLock::new();
 
@@ -309,7 +309,7 @@ impl PasswordProxy {
     }
 }
 
-/// Runs Zed in netcat mode for use in askpass.
+/// Runs Mutex in netcat mode for use in askpass.
 pub fn main(socket: &str) {
     use std::io::{self, Read};
     use std::process::exit;
@@ -323,7 +323,7 @@ pub fn main(socket: &str) {
     connect_and_write_prompt(socket, buffer)
 }
 
-/// Runs Zed in askpass mode using prompts passed as arguments.
+/// Runs Mutex in askpass mode using prompts passed as arguments.
 pub fn main_from_args(socket: &str, args: impl IntoIterator<Item = String>) {
     let prompt = args.into_iter().collect::<Vec<_>>().join("\0");
     connect_and_write_prompt(socket, prompt.into_bytes())

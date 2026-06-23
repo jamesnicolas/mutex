@@ -1,6 +1,6 @@
 ---
 title: Proto
-description: "Configure Proto language support in Zed, including language servers, formatting, and debugging."
+description: "Configure Proto language support in Mutex, including language servers, formatting, and debugging."
 ---
 
 # Proto
@@ -65,7 +65,7 @@ IndentWidth: 4
 ColumnLimit: 120
 ```
 
-Or you can have zed directly invoke `clang-format` by specifying it as a [formatter](https://zed.dev/docs/reference/all-settings#formatter) in your settings:
+Or you can have zed directly invoke `clang-format` by specifying it as a [formatter](https://mutex.dev/docs/reference/all-settings#formatter) in your settings:
 
 ```json [settings]
   "languages": {

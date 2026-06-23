@@ -375,7 +375,7 @@ impl LanguageModelProvider for CloudLanguageModelProvider {
         window: &mut Window,
         cx: &mut App,
     ) -> ProviderConfigurationView {
-        // The Zed sign-in/plan control is small enough that sending users to a
+        // The Mutex sign-in/plan control is small enough that sending users to a
         // dedicated sub-page just to reach it would be annoying, so render it
         // inline even though it isn't an API-key field.
         ProviderConfigurationView::Inline(self.configuration_view(target_agent, window, cx))
@@ -386,21 +386,21 @@ impl LanguageModelProvider for CloudLanguageModelProvider {
     }
 
     fn authentication_error_message(&self) -> SharedString {
-        "Failed to sign in with your Zed account (401).".into()
+        "Failed to sign in with your Mutex account (401).".into()
     }
 
     fn missing_credentials_error_message(&self) -> SharedString {
-        "You are not signed in to your Zed account. \
+        "You are not signed in to your Mutex account. \
         Sign in to continue."
             .into()
     }
 
     fn fast_mode_confirmation(&self, _cx: &App) -> Option<FastModeConfirmation> {
         Some(FastModeConfirmation {
-            title: "Enable Fast Mode for Zed?".into(),
+            title: "Enable Fast Mode for Mutex?".into(),
             message: "Fast mode routes requests through the upstream provider's fast mode or priority tier. The \
                 upstream provider's premium per-token pricing applies and is passed through to \
-                your Zed billing."
+                your Mutex billing."
                 .into(),
         })
     }
@@ -420,35 +420,35 @@ impl RenderOnce for ZedAiConfiguration {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let (subscription_text, has_paid_plan) = match self.plan {
             Some(Plan::ZedPro) => (
-                "You have access to Zed's hosted models through your Pro subscription.",
+                "You have access to Mutex's hosted models through your Pro subscription.",
                 true,
             ),
             Some(Plan::ZedProTrial) => (
-                "You have access to Zed's hosted models through your Pro trial.",
+                "You have access to Mutex's hosted models through your Pro trial.",
                 false,
             ),
             Some(Plan::ZedStudent) => (
-                "You have access to Zed's hosted models through your Student subscription.",
+                "You have access to Mutex's hosted models through your Student subscription.",
                 true,
             ),
             Some(Plan::ZedBusiness) => (
                 if self.is_zed_model_provider_enabled {
-                    "You have access to Zed's hosted models through your organization."
+                    "You have access to Mutex's hosted models through your organization."
                 } else {
-                    "Zed's hosted models are disabled by your organization's configuration."
+                    "Mutex's hosted models are disabled by your organization's configuration."
                 },
                 true,
             ),
             Some(Plan::ZedVip) => (
-                "You have access to Zed's hosted models through your VIP subscription.",
+                "You have access to Mutex's hosted models through your VIP subscription.",
                 true,
             ),
 
             Some(Plan::ZedFree) | None => (
                 if self.eligible_for_trial {
-                    "Subscribe for access to Zed's hosted models. Start with a 14 day free trial."
+                    "Subscribe for access to Mutex's hosted models. Start with a 14 day free trial."
                 } else {
-                    "Subscribe for access to Zed's hosted models."
+                    "Subscribe for access to Mutex's hosted models."
                 },
                 false,
             ),
@@ -478,9 +478,9 @@ impl RenderOnce for ZedAiConfiguration {
         if !self.is_connected {
             return v_flex()
                 .gap_2()
-                .child(Label::new("Sign in to have access to Zed's complete agentic experience with hosted models."))
+                .child(Label::new("Sign in to have access to Mutex's complete agentic experience with hosted models."))
                 .child(
-                    Button::new("sign_in", "Sign In to use Zed AI")
+                    Button::new("sign_in", "Sign In to use Mutex AI")
                         .start_icon(Icon::new(IconName::Github).size(IconSize::Small).color(Color::Muted))
                         .full_width()
                         .on_click({
@@ -841,9 +841,9 @@ impl Component for ZedAiConfiguration {
     }
 
     fn description() -> &'static str {
-        "The configuration surface for Zed's hosted AI models, \
+        "The configuration surface for Mutex's hosted AI models, \
         showing the user's connection status, current plan, trial eligibility, \
-        and entry points for enabling the Zed model provider."
+        and entry points for enabling the Mutex model provider."
     }
 
     fn preview(_window: &mut Window, _cx: &mut App) -> AnyElement {
@@ -916,7 +916,7 @@ impl Component for ZedAiConfiguration {
                     }),
                 ),
                 single_example(
-                    "Zed Pro Trial Plan",
+                    "Mutex Pro Trial Plan",
                     configuration(PreviewConfiguration {
                         plan: Some(Plan::ZedProTrial),
                         is_connected: true,
@@ -925,7 +925,7 @@ impl Component for ZedAiConfiguration {
                     }),
                 ),
                 single_example(
-                    "Zed Pro Plan",
+                    "Mutex Pro Plan",
                     configuration(PreviewConfiguration {
                         plan: Some(Plan::ZedPro),
                         is_connected: true,
@@ -934,7 +934,7 @@ impl Component for ZedAiConfiguration {
                     }),
                 ),
                 single_example(
-                    "Business Plan - Zed models enabled",
+                    "Business Plan - Mutex models enabled",
                     configuration(PreviewConfiguration {
                         plan: Some(Plan::ZedBusiness),
                         is_connected: true,
@@ -943,7 +943,7 @@ impl Component for ZedAiConfiguration {
                     }),
                 ),
                 single_example(
-                    "Business Plan - Zed models disabled",
+                    "Business Plan - Mutex models disabled",
                     configuration(PreviewConfiguration {
                         plan: Some(Plan::ZedBusiness),
                         is_connected: true,

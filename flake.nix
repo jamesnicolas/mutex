@@ -1,5 +1,5 @@
 {
-  description = "Zed is a minimal code editor crafted for speed and collaboration with humans and AI.";
+  description = "Mutex is a minimal code editor crafted for speed and collaboration with humans and AI.";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

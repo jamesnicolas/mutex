@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-# Downloads a tarball from https://zed.dev/releases and unpacks it
+# Downloads a tarball from https://mutex.dev/releases and unpacks it
 # into ~/.local/. If you'd prefer to do this manually, instructions are at
-# https://zed.dev/docs/linux.
+# https://mutex.dev/docs/linux.
 
 main() {
     platform="$(uname -s)"
@@ -55,9 +55,9 @@ main() {
     "$platform" "$@"
 
     if [ "$(command -v zed)" = "$HOME/.local/bin/zed" ]; then
-        echo "Zed has been installed. Run with 'zed'"
+        echo "Mutex has been installed. Run with 'zed'"
     else
-        echo "To run Zed from your terminal, you must add ~/.local/bin to your PATH"
+        echo "To run Mutex from your terminal, you must add ~/.local/bin to your PATH"
         echo "Run:"
 
         case "$SHELL" in
@@ -74,7 +74,7 @@ main() {
                 ;;
         esac
 
-        echo "To run Zed now, '~/.local/bin/zed'"
+        echo "To run Mutex now, '~/.local/bin/zed'"
     fi
 }
 
@@ -82,8 +82,8 @@ linux() {
     if [ -n "${ZED_BUNDLE_PATH:-}" ]; then
         cp "$ZED_BUNDLE_PATH" "$temp/zed-linux-$arch.tar.gz"
     else
-        echo "Downloading Zed version: $ZED_VERSION"
-        curl "https://cloud.zed.dev/releases/$channel/$ZED_VERSION/download?asset=zed&arch=$arch&os=linux&source=install.sh" > "$temp/zed-linux-$arch.tar.gz"
+        echo "Downloading Mutex version: $ZED_VERSION"
+        curl "https://cloud.mutex.dev/releases/$channel/$ZED_VERSION/download?asset=zed&arch=$arch&os=linux&source=install.sh" > "$temp/zed-linux-$arch.tar.gz"
     fi
 
     suffix=""
@@ -94,20 +94,20 @@ linux() {
     appid=""
     case "$channel" in
       stable)
-        appid="dev.zed.Zed"
+        appid="dev.mutex.Mutex"
         ;;
       nightly)
-        appid="dev.zed.Zed-Nightly"
+        appid="dev.mutex.Mutex-Nightly"
         ;;
       preview)
-        appid="dev.zed.Zed-Preview"
+        appid="dev.mutex.Mutex-Preview"
         ;;
       dev)
-        appid="dev.zed.Zed-Dev"
+        appid="dev.mutex.Mutex-Dev"
         ;;
       *)
         echo "Unknown release channel: ${channel}. Using stable app ID."
-        appid="dev.zed.Zed"
+        appid="dev.mutex.Mutex"
         ;;
     esac
 
@@ -141,9 +141,9 @@ linux() {
 }
 
 macos() {
-    echo "Downloading Zed version: $ZED_VERSION"
-    curl "https://cloud.zed.dev/releases/$channel/$ZED_VERSION/download?asset=zed&os=macos&arch=$arch&source=install.sh" > "$temp/Zed-$arch.dmg"
-    hdiutil attach -quiet "$temp/Zed-$arch.dmg" -mountpoint "$temp/mount"
+    echo "Downloading Mutex version: $ZED_VERSION"
+    curl "https://cloud.mutex.dev/releases/$channel/$ZED_VERSION/download?asset=zed&os=macos&arch=$arch&source=install.sh" > "$temp/Mutex-$arch.dmg"
+    hdiutil attach -quiet "$temp/Mutex-$arch.dmg" -mountpoint "$temp/mount"
     app="$(cd "$temp/mount/"; echo *.app)"
     echo "Installing $app"
     if [ -d "/Applications/$app" ]; then

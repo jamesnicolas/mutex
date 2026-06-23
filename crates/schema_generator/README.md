@@ -1,6 +1,6 @@
-# Zed Schema Generator
+# Mutex Schema Generator
 
-Prints various Zed schemas to stdout.
+Prints various Mutex schemas to stdout.
 
 ## Usage
 

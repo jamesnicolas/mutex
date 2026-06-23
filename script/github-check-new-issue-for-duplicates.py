@@ -315,7 +315,7 @@ def detect_areas(anthropic_key, issue, area_labels):
 
 Decide the area from the user's stated symptom and reproduction steps. Issue bodies routinely
 contain pasted log output, crash dumps, stack traces, settings files, and template headers like
-"Attach Zed log file" or "Relevant Zed settings" — these are evidence about the symptom and
+"Attach Mutex log file" or "Relevant Mutex settings" — these are evidence about the symptom and
 should not push you toward labels like "logging" or "settings" unless the bug itself is about
 how that subsystem works.
 
@@ -585,9 +585,9 @@ Sort duplicates into two buckets:
   at a surface level.
 
 Examples of things that are NOT duplicates:
-- Two issues about "Copilot models not showing" — one caused by a Zed update breaking the model list,
+- Two issues about "Copilot models not showing" — one caused by a Mutex update breaking the model list,
   the other caused by the user's plan not including those models.
-- Two issues about "Zed hangs" — one triggered by network drives, the other by large projects.
+- Two issues about "Mutex hangs" — one triggered by network drives, the other by large projects.
 - Two issues about "can't sign in" — one caused by a missing system package, the other by a server-side error.
 
 For OPEN duplicates (either bucket), false positives are MUCH worse than false negatives — they
@@ -633,7 +633,7 @@ Omit a candidate if ANY of these apply (in observed practice, almost everything 
    - "Worktree path bug" alongside "worktree display label confusion" — same feature,
      unrelated.
 
-6. Vague catch-all candidate. A closed issue like "Zed is slow" / "performance" / "agent
+6. Vague catch-all candidate. A closed issue like "Mutex is slow" / "performance" / "agent
    panel UX" that could be cited next to almost any new bug is filler. If you'd reuse the
    same closed issue across many unrelated new issues, omit.
 
@@ -781,7 +781,7 @@ Return "omit" if ANY of the following apply (in observed practice, almost everyt
    was a recent fix in roughly the same area" is not enough.
 5. Same area / feature, different mechanism. Same area label but different bug, different
    code path, different trigger. Omit.
-6. Vague catch-all candidate. A closed issue like "Zed is slow" / "performance" / "agent
+6. Vague catch-all candidate. A closed issue like "Mutex is slow" / "performance" / "agent
    panel UX" that you could cite next to many unrelated new bugs. Omit.
 7. Label or single-keyword overlap. Only connection is a shared area:* label or one shared
    keyword. Omit.

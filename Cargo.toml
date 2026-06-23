@@ -1024,7 +1024,7 @@ redundant_clone = "deny"
 disallowed_methods = "deny"
 
 # We currently do not restrict any style rules
-# as it slows down shipping code to Zed.
+# as it slows down shipping code to Mutex.
 #
 # Running ./script/clippy can take several minutes, and so it's
 # common to skip that step and let CI do it. Any unexpected failures
@@ -1032,7 +1032,7 @@ disallowed_methods = "deny"
 # to an old branch, manual fixing, and re-pushing.
 #
 # In the future we could improve this by either making sure
-# Zed can surface clippy errors in diagnostics (in addition to the
+# Mutex can surface clippy errors in diagnostics (in addition to the
 # rust-analyzer errors), or by having CI fix style nits automatically.
 style = { level = "allow", priority = -1 }
 

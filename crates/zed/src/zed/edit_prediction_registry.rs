@@ -116,9 +116,9 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
     match provider {
         EditPredictionProvider::None => None,
         EditPredictionProvider::Copilot => Some(EditPredictionProviderConfig::Copilot),
-        EditPredictionProvider::Zed => {
-            Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
-        }
+        EditPredictionProvider::Mutex => Some(EditPredictionProviderConfig::Mutex(
+            EditPredictionModel::Zeta,
+        )),
         EditPredictionProvider::Codestral => Some(EditPredictionProviderConfig::Codestral),
         EditPredictionProvider::Ollama | EditPredictionProvider::OpenAiCompatibleApi => {
             let custom_settings = if provider == EditPredictionProvider::Ollama {
@@ -138,15 +138,17 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
             }
 
             if matches!(format, EditPredictionPromptFormat::Zeta(_)) {
-                Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
+                Some(EditPredictionProviderConfig::Mutex(
+                    EditPredictionModel::Zeta,
+                ))
             } else {
-                Some(EditPredictionProviderConfig::Zed(
+                Some(EditPredictionProviderConfig::Mutex(
                     EditPredictionModel::Fim { format },
                 ))
             }
         }
 
-        EditPredictionProvider::Mercury => Some(EditPredictionProviderConfig::Zed(
+        EditPredictionProvider::Mercury => Some(EditPredictionProviderConfig::Mutex(
             EditPredictionModel::Mercury,
         )),
     }
@@ -175,7 +177,7 @@ fn infer_prompt_format(model: &str) -> Option<EditPredictionPromptFormat> {
 enum EditPredictionProviderConfig {
     Copilot,
     Codestral,
-    Zed(EditPredictionModel),
+    Mutex(EditPredictionModel),
 }
 
 impl EditPredictionProviderConfig {
@@ -183,7 +185,7 @@ impl EditPredictionProviderConfig {
         match self {
             EditPredictionProviderConfig::Copilot => "Copilot",
             EditPredictionProviderConfig::Codestral => "Codestral",
-            EditPredictionProviderConfig::Zed(model) => match model {
+            EditPredictionProviderConfig::Mutex(model) => match model {
                 EditPredictionModel::Zeta => "Zeta",
                 EditPredictionModel::Fim { .. } => "FIM",
                 EditPredictionModel::Mercury => "Mercury",
@@ -275,7 +277,7 @@ fn assign_edit_prediction_provider(
             let provider = cx.new(|_| CodestralEditPredictionDelegate::new(http_client));
             editor.set_edit_prediction_provider(Some(provider), window, cx);
         }
-        Some(EditPredictionProviderConfig::Zed(model)) => {
+        Some(EditPredictionProviderConfig::Mutex(model)) => {
             let ep_store = edit_prediction::EditPredictionStore::global(client, &user_store, cx);
 
             if let Some(organization_configuration) =
@@ -339,7 +341,7 @@ mod tests {
         });
 
         // Override the default provider to None so the subscribe closure
-        // captures None at init time. (The test default is Zed/Zeta1, which
+        // captures None at init time. (The test default is Mutex/Zeta1, which
         // is a no-op on project-less editors and would mask the bug.)
         cx.update(|cx| {
             cx.update_global::<SettingsStore, _>(|store: &mut SettingsStore, cx| {

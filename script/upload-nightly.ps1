@@ -23,10 +23,10 @@ foreach ($file in $remoteServerFiles) {
     Remove-Item -Path $file.FullName -ErrorAction SilentlyContinue
 }
 
-UploadToBlobStore -BucketName $bucketName -FileToUpload "target/Zed-$Architecture.exe" -BlobStoreKey "nightly/Zed-$Architecture.exe"
-UploadToBlobStore -BucketName $bucketName -FileToUpload "target/Zed-$Architecture.exe" -BlobStoreKey "$version/Zed-$Architecture.exe"
+UploadToBlobStore -BucketName $bucketName -FileToUpload "target/Mutex-$Architecture.exe" -BlobStoreKey "nightly/Mutex-$Architecture.exe"
+UploadToBlobStore -BucketName $bucketName -FileToUpload "target/Mutex-$Architecture.exe" -BlobStoreKey "$version/Mutex-$Architecture.exe"
 
-Remove-Item -Path "target/Zed-$Architecture.exe" -ErrorAction SilentlyContinue
+Remove-Item -Path "target/Mutex-$Architecture.exe" -ErrorAction SilentlyContinue
 
 $version | Out-File -FilePath "target/latest-sha" -NoNewline
 UploadToBlobStore -BucketName $bucketName -FileToUpload "target/latest-sha" -BlobStoreKey "nightly/latest-sha-windows"

@@ -1,4 +1,4 @@
-//! Headless CLI binary for running Zed's agent in evaluation/benchmark environments.
+//! Headless CLI binary for running Mutex's agent in evaluation/benchmark environments.
 //!
 //! Designed to work inside containerized environments (like Harbor/termbench) where:
 //! - The repository is already checked out at the working directory
@@ -60,11 +60,11 @@ use crate::headless::AgentCliAppState;
 #[derive(Parser, Debug)]
 #[command(
     name = "eval-cli",
-    about = "Run Zed's agent headlessly in evaluation/benchmark environments"
+    about = "Run Mutex's agent headlessly in evaluation/benchmark environments"
 )]
 struct Args {
     /// Output current environment variables as JSON to stdout.
-    /// Used internally by Zed's shell environment capture.
+    /// Used internally by Mutex's shell environment capture.
     #[arg(long, hide = true)]
     printenv: bool,
 

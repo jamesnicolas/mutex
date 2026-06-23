@@ -100,7 +100,7 @@ impl LauncherStatus {
             LauncherStatus::Success => "the sandbox was created",
             LauncherStatus::BwrapNotFound => "no usable `bwrap` binary was found on PATH",
             LauncherStatus::SetuidRejected => {
-                "the only available `bwrap` is setuid-root, which Zed refuses to run"
+                "the only available `bwrap` is setuid-root, which Mutex refuses to run"
             }
             LauncherStatus::SandboxProbeFailed => {
                 "`bwrap` is present but failed to create a sandbox (unprivileged user \
@@ -157,7 +157,7 @@ impl StatusChannel {
 
 /// A process-unique abstract socket name. The pid plus a monotonically
 /// increasing counter and the current time make collisions between concurrent
-/// launches (and between Zed instances) effectively impossible.
+/// launches (and between Mutex instances) effectively impossible.
 fn unique_socket_name() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);

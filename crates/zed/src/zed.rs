@@ -15,7 +15,7 @@ pub mod visual_tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
 
-use agent_settings::{AgentSettings, UserAgentsMdState, WindowLayout, init_user_agents_md};
+use agent_settings::{UserAgentsMdState, init_user_agents_md};
 use agent_ui::AgentDiffToolbar;
 use anyhow::Context as _;
 pub use app_menus::*;
@@ -105,8 +105,8 @@ use zed_actions::{
     OpenStatusPage, OpenZedUrl, Quit,
 };
 
-const DOCS_URL: &str = "https://zed.dev/docs/";
-const STATUS_URL: &str = "https://status.zed.dev";
+const DOCS_URL: &str = "https://mutex.dev/docs/";
+const STATUS_URL: &str = "https://status.mutex.dev";
 
 pub struct CrashHandler(pub Arc<crashes::Client>);
 
@@ -198,7 +198,7 @@ pub fn init(cx: &mut App) {
     })
     .detach();
 
-    // When Zed logs to stdout rather than the log file, avoid registering
+    // When Mutex logs to stdout rather than the log file, avoid registering
     // handlers for both `OpenLog` and `RevealLogInFileManager`, as the log file
     // does not exist in that scenario and these actions would error.
     if !crate::stdout_is_a_pty() {
@@ -508,7 +508,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                         cx.new(|cx| Sidebar::new(multi_workspace_handle.clone(), window, cx));
                     multi_workspace_handle.update(cx, |multi_workspace, cx| {
                         multi_workspace.register_sidebar(sidebar, cx);
-                        open_threads_sidebar_for_agent_layout(multi_workspace, cx);
                     });
                 })
                 .ok();
@@ -629,17 +628,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
     .detach();
 }
 
-fn open_threads_sidebar_for_agent_layout(
-    multi_workspace: &mut MultiWorkspace,
-    cx: &mut Context<MultiWorkspace>,
-) {
-    if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_))
-        && !multi_workspace.sidebar_open()
-    {
-        multi_workspace.open_sidebar(cx);
-    }
-}
-
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 #[allow(unused)]
 fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
@@ -648,7 +636,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             inotify_init returned {}
 
-            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://zed.dev/docs/linux
+            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://mutex.dev/docs/linux
             "#},
             e
         );
@@ -662,7 +650,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/linux#could-not-start-inotify");
+                    cx.open_url("https://mutex.dev/docs/linux#could-not-start-inotify");
                     cx.quit();
                 });
             }
@@ -679,7 +667,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             ReadDirectoryChangesW initialization failed: {}
 
-            This may occur on network filesystems and WSL paths. For troubleshooting see: https://zed.dev/docs/windows
+            This may occur on network filesystems and WSL paths. For troubleshooting see: https://mutex.dev/docs/windows
             "#},
             e
         );
@@ -693,7 +681,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/windows");
+                    cx.open_url("https://mutex.dev/docs/windows");
                     cx.quit()
                 });
             }
@@ -711,19 +699,19 @@ fn show_software_emulation_warning_if_needed(
         let (graphics_api, docs_url, open_url) = if cfg!(target_os = "windows") {
             (
                 "DirectX",
-                "https://zed.dev/docs/windows",
-                "https://zed.dev/docs/windows",
+                "https://mutex.dev/docs/windows",
+                "https://mutex.dev/docs/windows",
             )
         } else {
             (
                 "Vulkan",
-                "https://zed.dev/docs/linux",
-                "https://zed.dev/docs/linux#zed-fails-to-open-windows",
+                "https://mutex.dev/docs/linux",
+                "https://mutex.dev/docs/linux#zed-fails-to-open-windows",
             )
         };
         let message = format!(
             db::indoc! {r#"
-            Zed uses {} for rendering and requires a compatible GPU.
+            Mutex uses {} for rendering and requires a compatible GPU.
 
             Currently you are using a software emulated GPU ({}) which
             will result in awful performance.
@@ -1139,7 +1127,7 @@ fn register_actions(
                         Toast::new(
                             NotificationId::unique::<RegisterZedScheme>(),
                             format!(
-                                "zed:// links will now open in {}.",
+                                "mutex:// links will now open in {}.",
                                 ReleaseChannel::global(cx).display_name()
                             ),
                         ),
@@ -1149,7 +1137,7 @@ fn register_actions(
                 Ok(())
             })
             .detach_and_prompt_err(
-                "Error registering zed:// scheme",
+                "Error registering mutex:// scheme",
                 window,
                 cx,
                 |_, _, _| None,
@@ -1626,7 +1614,7 @@ fn open_about_window(cx: &mut App) {
     cx.open_window(
         WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some("About Zed".into()),
+                title: Some("About Mutex".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(12.), px(12.))),
             }),
@@ -2641,6 +2629,7 @@ pub(crate) fn eager_load_active_theme_and_icon_theme(fs: Arc<dyn Fs>, cx: &mut A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_settings::{AgentSettings, WindowLayout};
     use assets::Assets;
     use collections::HashSet;
     use editor::{
@@ -2668,10 +2657,9 @@ mod tests {
         path,
         rel_path::{RelPath, rel_path},
     };
-    use workspace::MultiWorkspace;
     use workspace::{
-        NewFile, OpenOptions, OpenVisible, SERIALIZATION_THROTTLE_TIME, SaveIntent, SplitDirection,
-        WorkspaceHandle,
+        MultiWorkspace, MultiWorkspaceState, NewFile, OpenOptions, OpenVisible,
+        SERIALIZATION_THROTTLE_TIME, SaveIntent, SplitDirection, WorkspaceHandle,
         item::SaveOptions,
         item::{Item, ItemHandle},
         open_new, open_paths, pane,
@@ -2762,6 +2750,60 @@ mod tests {
                 assert!(
                     multi_workspace.sidebar_open(),
                     "agent layout should show threads in the sidebar"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_restored_agent_layout_preserves_closed_threads_sidebar(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/root"), json!({}))
+            .await;
+        let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+
+        let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        cx.run_until_parked();
+
+        window
+            .update(cx, |multi_workspace, _window, _cx| {
+                assert!(
+                    multi_workspace.sidebar_open(),
+                    "fresh agent layout should show threads in the sidebar"
+                );
+            })
+            .unwrap();
+
+        let restored_state = MultiWorkspaceState {
+            sidebar_open: false,
+            ..Default::default()
+        };
+        cx.update({
+            let fs = app_state.fs.clone();
+            let window = window.clone();
+            move |cx| {
+                cx.spawn(async move |mut cx| {
+                    workspace::apply_restored_multiworkspace_state(
+                        window,
+                        &restored_state,
+                        fs,
+                        &mut cx,
+                    )
+                    .await;
+                })
+            }
+        })
+        .await;
+        cx.run_until_parked();
+
+        window
+            .update(cx, |multi_workspace, _window, _cx| {
+                assert!(
+                    !multi_workspace.sidebar_open(),
+                    "restoring a closed threads sidebar must preserve the persisted state"
                 );
             })
             .unwrap();

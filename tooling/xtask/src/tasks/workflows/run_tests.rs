@@ -132,7 +132,7 @@ pub(crate) fn run_tests() -> Workflow {
 /// Controls which features `orchestrate_impl` includes in the generated script.
 #[derive(PartialEq, Eq)]
 enum OrchestrateTarget {
-    /// For the main Zed repo: includes the cargo package filter and extension
+    /// For the main Mutex repo: includes the cargo package filter and extension
     /// change detection, but no working-directory scoping.
     ZedRepo,
     /// For individual extension repos: scopes changed-file detection to the
@@ -410,7 +410,7 @@ pub(crate) fn run_ts_query_ls(context: RunContext) -> Step<Run> {
         "$GITHUB_WORKSPACE/ts_query_ls" format --check {directory} || {{
             echo "Found unformatted queries, please format them with ts_query_ls."
             echo "For easy use, install the Tree-sitter query extension:"
-            echo "zed://extension/tree-sitter-query"
+            echo "mutex://extension/tree-sitter-query"
             false
         }}"#,
         directory = match context {
@@ -705,9 +705,9 @@ pub(crate) fn check_postgres_and_protobuf_migrations() -> NamedJob {
         release_job(&[])
             .runs_on(runners::LINUX_DEFAULT)
             .add_env(("GIT_AUTHOR_NAME", "Protobuf Action"))
-            .add_env(("GIT_AUTHOR_EMAIL", "ci@zed.dev"))
+            .add_env(("GIT_AUTHOR_EMAIL", "ci@mutex.dev"))
             .add_env(("GIT_COMMITTER_NAME", "Protobuf Action"))
-            .add_env(("GIT_COMMITTER_EMAIL", "ci@zed.dev"))
+            .add_env(("GIT_COMMITTER_EMAIL", "ci@mutex.dev"))
             .add_step(steps::harden_runner())
             .add_step(steps::checkout_repo().with_full_history())
             .add_step(ensure_fresh_merge())

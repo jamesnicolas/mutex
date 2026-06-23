@@ -1,4 +1,4 @@
-//! Vim support for Zed.
+//! Vim support for Mutex.
 
 #[cfg(test)]
 mod test;

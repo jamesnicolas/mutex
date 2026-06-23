@@ -146,20 +146,20 @@ impl Config {
         self.zed_environment == "development".into()
     }
 
-    /// Returns the base `zed.dev` URL.
+    /// Returns the base `mutex.dev` URL.
     pub fn zed_dot_dev_url(&self) -> &str {
         match self.zed_environment.as_ref() {
             "development" => "http://localhost:3000",
-            "staging" => "https://staging.zed.dev",
-            _ => "https://zed.dev",
+            "staging" => "https://staging.mutex.dev",
+            _ => "https://mutex.dev",
         }
     }
 
-    /// Returns the base Zed Cloud URL.
+    /// Returns the base Mutex Cloud URL.
     pub fn zed_cloud_url(&self) -> &str {
         match self.zed_environment.as_ref() {
             "development" => "http://localhost:8787",
-            _ => "https://cloud.zed.dev",
+            _ => "https://cloud.mutex.dev",
         }
     }
 

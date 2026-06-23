@@ -960,7 +960,7 @@ pub struct CreateThreadOptions {
     /// Agent to use. Defaults to the panel's selected agent.
     pub agent: Option<Agent>,
     /// Model override, as `provider/model-id`. Only applied when the thread
-    /// uses the native Zed agent.
+    /// uses the native Mutex agent.
     pub model: Option<String>,
     /// Working directories to attach to the new thread (e.g., the path of a
     /// freshly-created sibling worktree). When `None`, the thread inherits
@@ -4916,7 +4916,7 @@ impl agent::SiblingThreadHost for AgentPanelSiblingHost {
 
         let mut agents = Vec::new();
 
-        // Native Zed agent — always available, and we can enumerate models
+        // Native Mutex agent — always available, and we can enumerate models
         // directly from the language model registry.
         let native_models = {
             let registry = LanguageModelRegistry::read_global(cx);
@@ -5873,7 +5873,7 @@ impl AgentPanel {
                             }
                         })
                         .item(
-                            ContextMenuEntry::new("Zed Agent")
+                            ContextMenuEntry::new("Mutex Agent")
                                 .when(
                                     !showing_terminal && is_agent_selected(Agent::NativeAgent),
                                     |this| this.action(Box::new(NewThread)),
@@ -8323,7 +8323,7 @@ mod tests {
             "resource text should be the raw conflict"
         );
         assert!(
-            uri.starts_with("zed:///agent/merge-conflict"),
+            uri.starts_with("mutex:///agent/merge-conflict"),
             "URI should use the zed merge-conflict scheme, got: {uri}"
         );
         assert!(uri.contains("utils.rs"), "URI should encode the file path");
