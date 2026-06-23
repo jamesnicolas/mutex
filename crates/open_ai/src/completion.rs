@@ -452,6 +452,10 @@ fn push_replayed_reasoning_item(
     replayed_reasoning_item_indexes: &mut HashMap<String, usize>,
     input_items: &mut Vec<ResponseInputItem>,
 ) {
+    if !reasoning_item_has_encrypted_content(&reasoning_item) {
+        return;
+    }
+
     if let Some(id) = reasoning_item.id.as_ref() {
         if let Some(index) = replayed_reasoning_item_indexes.get(id) {
             input_items[*index] = ResponseInputItem::Reasoning(reasoning_item);
@@ -1067,6 +1071,10 @@ impl OpenAiResponseEventMapper {
     ) -> Vec<Result<LanguageModelCompletionEvent, LanguageModelCompletionError>> {
         let reasoning_item = response_reasoning_input_item_from_output(reasoning);
 
+        if !reasoning_item_has_encrypted_content(&reasoning_item) {
+            return Vec::new();
+        }
+
         if self.reasoning_items.contains(&reasoning_item) {
             return Vec::new();
         }
@@ -1214,6 +1222,13 @@ fn response_reasoning_input_item_from_output(
         encrypted_content,
         status: reasoning.status.clone(),
     }
+}
+
+fn reasoning_item_has_encrypted_content(reasoning_item: &ResponseReasoningInputItem) -> bool {
+    reasoning_item
+        .encrypted_content
+        .as_deref()
+        .is_some_and(|encrypted_content| !encrypted_content.is_empty())
 }
 
 #[cfg(test)]
@@ -1621,7 +1636,7 @@ mod tests {
     }
 
     #[test]
-    fn into_open_ai_response_replays_reasoning_without_encrypted_content() {
+    fn into_open_ai_response_omits_reasoning_without_encrypted_content() {
         let request = LanguageModelRequest {
             thread_id: None,
             prompt_id: None,
@@ -1664,19 +1679,6 @@ mod tests {
             serialized["input"],
             json!([
                 {
-                    "type": "reasoning",
-                    "id": "rs_123",
-                    "summary": [],
-                    "status": "completed"
-                },
-                {
-                    "type": "reasoning",
-                    "id": "rs_456",
-                    "summary": [],
-                    "encrypted_content": "",
-                    "status": "completed"
-                },
-                {
                     "type": "message",
                     "role": "assistant",
                     "content": [
@@ -1689,6 +1691,7 @@ mod tests {
                 }
             ])
         );
+        assert_eq!(serialized.get("include"), None);
     }
 
     #[test]
@@ -2911,6 +2914,36 @@ mod tests {
                     }
                 ]
             })
+        );
+    }
+
+    #[test]
+    fn responses_stream_omits_reasoning_details_without_encrypted_content() {
+        let events = vec![
+            ResponsesStreamEvent::OutputItemDone {
+                output_index: 0,
+                sequence_number: None,
+                item: ResponseOutputItem::Reasoning(response_reasoning_item(
+                    "rs_123",
+                    vec![ReasoningSummaryPart::SummaryText {
+                        text: "Checked what information is needed.".into(),
+                    }],
+                    None,
+                    Some("completed".into()),
+                )),
+            },
+            ResponsesStreamEvent::Completed {
+                response: ResponseSummary::default(),
+            },
+        ];
+
+        let mapped = map_response_events(events);
+
+        assert!(
+            !mapped
+                .iter()
+                .any(|event| matches!(event, LanguageModelCompletionEvent::ReasoningDetails(_))),
+            "unencrypted reasoning item ids cannot be replayed with store=false"
         );
     }
 

@@ -202,6 +202,24 @@ struct PartialResponseError {
     param: Option<Value>,
 }
 
+#[derive(Deserialize, Debug, Default)]
+struct HttpErrorLogBody {
+    #[serde(default)]
+    error: Option<HttpErrorLogObject>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct HttpErrorLogObject {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default, rename = "type")]
+    error_type: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    param: Option<Value>,
+}
+
 impl GenericStreamErrorPayload {
     pub fn into_response_error(self) -> ResponseError {
         let nested = self.error.unwrap_or_default();
@@ -466,9 +484,12 @@ pub async fn stream_response(
 ) -> Result<BoxStream<'static, Result<StreamEvent>>, RequestError> {
     let uri = format!("{api_url}/responses");
     let is_streaming = request.stream;
+    log::debug!(
+        "OpenAI responses request started: provider={provider_name} endpoint={uri} stream={is_streaming}"
+    );
     let request = HttpRequest::builder()
         .method(Method::POST)
-        .uri(uri)
+        .uri(uri.clone())
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", api_key.trim()))
         .extra_headers(extra_headers)
@@ -481,19 +502,41 @@ pub async fn stream_response(
     if response.status().is_success() {
         if is_streaming {
             let reader = BufReader::new(response.into_body());
+            let provider_name = provider_name.to_owned();
+            let uri = uri.clone();
             Ok(reader
                 .lines()
-                .filter_map(|line| async move {
+                .filter_map(move |line| {
+                    let provider_name = provider_name.clone();
+                    let uri = uri.clone();
+                    async move {
                     match line {
                         Ok(line) => {
                             let line = line
                                 .strip_prefix("data: ")
                                 .or_else(|| line.strip_prefix("data:"))?;
-                            if line == "[DONE]" || line.is_empty() {
+                            if line == "[DONE]" {
+                                log::debug!(
+                                    "OpenAI responses stream done marker: provider={provider_name} endpoint={uri}"
+                                );
+                                None
+                            } else if line.is_empty() {
                                 None
                             } else {
                                 match serde_json::from_str::<StreamEvent>(line) {
-                                    Ok(event) => Some(Ok(event)),
+                                    Ok(event) => {
+                                        let event_summary = stream_event_log_summary(&event);
+                                        if stream_event_is_high_volume(&event) {
+                                            log::trace!(
+                                                "OpenAI responses stream event: provider={provider_name} endpoint={uri} {event_summary}"
+                                            );
+                                        } else {
+                                            log::debug!(
+                                                "OpenAI responses stream event: provider={provider_name} endpoint={uri} {event_summary}"
+                                            );
+                                        }
+                                        Some(Ok(event))
+                                    }
                                     Err(error) => {
                                         log::error!(
                                             "Failed to parse OpenAI responses stream event: `{}`\nResponse: `{}`",
@@ -507,6 +550,7 @@ pub async fn stream_response(
                         }
                         Err(error) => Some(Err(anyhow!(error))),
                     }
+                    }
                 })
                 .boxed())
         } else {
@@ -519,6 +563,10 @@ pub async fn stream_response(
 
             match serde_json::from_str::<ResponseSummary>(&body) {
                 Ok(response_summary) => {
+                    log::debug!(
+                        "OpenAI responses non-streaming response: provider={provider_name} endpoint={uri} {}",
+                        response_summary_log_summary(&response_summary)
+                    );
                     let events = vec![
                         StreamEvent::Created {
                             response: response_summary.clone(),
@@ -623,6 +671,11 @@ pub async fn stream_response(
             .read_to_string(&mut body)
             .await
             .map_err(|e| RequestError::Other(e.into()))?;
+        log::debug!(
+            "OpenAI responses request failed: provider={provider_name} endpoint={uri} status={} {}",
+            response.status(),
+            http_error_body_log_summary(&body)
+        );
 
         Err(RequestError::HttpResponseError {
             provider: provider_name.to_owned(),
@@ -630,5 +683,264 @@ pub async fn stream_response(
             body,
             headers: response.headers().clone(),
         })
+    }
+}
+
+fn stream_event_log_summary(event: &StreamEvent) -> String {
+    match event {
+        StreamEvent::Created { response } => {
+            format!(
+                "event=response.created {}",
+                response_summary_log_summary(response)
+            )
+        }
+        StreamEvent::InProgress { response } => {
+            format!(
+                "event=response.in_progress {}",
+                response_summary_log_summary(response)
+            )
+        }
+        StreamEvent::OutputItemAdded {
+            output_index,
+            sequence_number,
+            item,
+        } => format!(
+            "event=response.output_item.added output_index={output_index} sequence_number={} item_type={}",
+            optional_number(sequence_number),
+            response_output_item_kind(item)
+        ),
+        StreamEvent::OutputItemDone {
+            output_index,
+            sequence_number,
+            item,
+        } => format!(
+            "event=response.output_item.done output_index={output_index} sequence_number={} item_type={}",
+            optional_number(sequence_number),
+            response_output_item_kind(item)
+        ),
+        StreamEvent::ContentPartAdded {
+            output_index,
+            content_index,
+            ..
+        } => format!(
+            "event=response.content_part.added output_index={output_index} content_index={content_index}"
+        ),
+        StreamEvent::ContentPartDone {
+            output_index,
+            content_index,
+            ..
+        } => format!(
+            "event=response.content_part.done output_index={output_index} content_index={content_index}"
+        ),
+        StreamEvent::OutputTextDelta {
+            output_index,
+            content_index,
+            delta,
+            ..
+        } => format!(
+            "event=response.output_text.delta output_index={output_index} content_index={} delta_chars={}",
+            optional_number(content_index),
+            delta.chars().count()
+        ),
+        StreamEvent::OutputTextDone {
+            output_index,
+            content_index,
+            text,
+            ..
+        } => format!(
+            "event=response.output_text.done output_index={output_index} content_index={} text_chars={}",
+            optional_number(content_index),
+            text.chars().count()
+        ),
+        StreamEvent::RefusalDelta {
+            output_index,
+            content_index,
+            sequence_number,
+            delta,
+            ..
+        } => format!(
+            "event=response.refusal.delta output_index={output_index} content_index={content_index} sequence_number={} delta_chars={}",
+            optional_number(sequence_number),
+            delta.chars().count()
+        ),
+        StreamEvent::RefusalDone {
+            output_index,
+            content_index,
+            sequence_number,
+            refusal,
+            ..
+        } => format!(
+            "event=response.refusal.done output_index={output_index} content_index={content_index} sequence_number={} refusal_chars={}",
+            optional_number(sequence_number),
+            refusal.chars().count()
+        ),
+        StreamEvent::ReasoningSummaryPartAdded {
+            output_index,
+            summary_index,
+            ..
+        } => format!(
+            "event=response.reasoning_summary_part.added output_index={output_index} summary_index={summary_index}"
+        ),
+        StreamEvent::ReasoningSummaryTextDelta {
+            output_index,
+            delta,
+            ..
+        } => format!(
+            "event=response.reasoning_summary_text.delta output_index={output_index} delta_chars={}",
+            delta.chars().count()
+        ),
+        StreamEvent::ReasoningSummaryTextDone {
+            output_index, text, ..
+        } => format!(
+            "event=response.reasoning_summary_text.done output_index={output_index} text_chars={}",
+            text.chars().count()
+        ),
+        StreamEvent::ReasoningSummaryPartDone {
+            output_index,
+            summary_index,
+            ..
+        } => format!(
+            "event=response.reasoning_summary_part.done output_index={output_index} summary_index={summary_index}"
+        ),
+        StreamEvent::FunctionCallArgumentsDelta {
+            output_index,
+            sequence_number,
+            delta,
+            ..
+        } => format!(
+            "event=response.function_call_arguments.delta output_index={output_index} sequence_number={} delta_chars={}",
+            optional_number(sequence_number),
+            delta.chars().count()
+        ),
+        StreamEvent::FunctionCallArgumentsDone {
+            output_index,
+            sequence_number,
+            arguments,
+            ..
+        } => format!(
+            "event=response.function_call_arguments.done output_index={output_index} sequence_number={} arguments_chars={}",
+            optional_number(sequence_number),
+            arguments.chars().count()
+        ),
+        StreamEvent::Completed { response } => {
+            format!(
+                "event=response.completed {}",
+                response_summary_log_summary(response)
+            )
+        }
+        StreamEvent::Incomplete { response } => {
+            format!(
+                "event=response.incomplete {}",
+                response_summary_log_summary(response)
+            )
+        }
+        StreamEvent::Failed { response } => {
+            format!(
+                "event=response.failed {}",
+                response_summary_log_summary(response)
+            )
+        }
+        StreamEvent::Error { error } => {
+            format!("event=response.error {}", response_error_log_summary(error))
+        }
+        StreamEvent::GenericError { error } => {
+            let error = error.clone().into_response_error();
+            format!("event=error {}", response_error_log_summary(&error))
+        }
+        StreamEvent::Unknown => "event=unknown".to_string(),
+    }
+}
+
+fn stream_event_is_high_volume(event: &StreamEvent) -> bool {
+    matches!(
+        event,
+        StreamEvent::OutputTextDelta { .. }
+            | StreamEvent::RefusalDelta { .. }
+            | StreamEvent::ReasoningSummaryTextDelta { .. }
+            | StreamEvent::FunctionCallArgumentsDelta { .. }
+    )
+}
+
+fn response_summary_log_summary(response: &ResponseSummary) -> String {
+    let status = response.status.as_deref().unwrap_or("none");
+    let response_id = response.id.as_deref().unwrap_or("none");
+    let incomplete_reason = response
+        .incomplete_details
+        .as_ref()
+        .and_then(|details| details.reason.as_deref())
+        .unwrap_or("none");
+    let error = response
+        .error
+        .as_ref()
+        .map(response_error_log_summary)
+        .unwrap_or_else(|| "none".to_string());
+    let usage = response
+        .usage
+        .as_ref()
+        .map(response_usage_log_summary)
+        .unwrap_or_else(|| "none".to_string());
+
+    format!(
+        "response_id={response_id} status={status} output_count={} incomplete_reason={incomplete_reason} error={error} usage={usage}",
+        response.output.len()
+    )
+}
+
+fn response_error_log_summary(error: &ResponseError) -> String {
+    format!(
+        "code={} message_chars={} param_present={}",
+        error.code.as_deref().unwrap_or("none"),
+        error.message.chars().count(),
+        error.param.is_some()
+    )
+}
+
+fn response_usage_log_summary(usage: &ResponseUsage) -> String {
+    format!(
+        "input_tokens={} output_tokens={} total_tokens={} cached_tokens={} reasoning_tokens={}",
+        optional_number(&usage.input_tokens),
+        optional_number(&usage.output_tokens),
+        optional_number(&usage.total_tokens),
+        usage.input_tokens_details.cached_tokens,
+        usage.output_tokens_details.reasoning_tokens,
+    )
+}
+
+fn response_output_item_kind(item: &ResponseOutputItem) -> &'static str {
+    match item {
+        ResponseOutputItem::Message(_) => "message",
+        ResponseOutputItem::FunctionCall(_) => "function_call",
+        ResponseOutputItem::Reasoning(_) => "reasoning",
+        ResponseOutputItem::Compaction(_) => "compaction",
+        ResponseOutputItem::Unknown => "unknown",
+    }
+}
+
+fn optional_number<T: std::fmt::Display>(value: &Option<T>) -> String {
+    value
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn http_error_body_log_summary(body: &str) -> String {
+    let body_chars = body.chars().count();
+    match serde_json::from_str::<HttpErrorLogBody>(body) {
+        Ok(body) => match body.error {
+            Some(error) => format!(
+                "body_chars={body_chars} error_type={} code={} message_chars={} param_present={}",
+                error.error_type.as_deref().unwrap_or("none"),
+                error.code.as_deref().unwrap_or("none"),
+                error
+                    .message
+                    .as_deref()
+                    .map(str::chars)
+                    .map(Iterator::count)
+                    .unwrap_or_default(),
+                error.param.is_some()
+            ),
+            None => format!("body_chars={body_chars} error=none"),
+        },
+        Err(error) => format!("body_chars={body_chars} parse_error={error}"),
     }
 }
