@@ -179,7 +179,7 @@ impl WslRemoteConnection {
         };
 
         let binary_name = format!(
-            "zed-remote-server-{}-{}",
+            "mutex-remote-server-{}-{}",
             release_channel.dev_name(),
             version_str
         );

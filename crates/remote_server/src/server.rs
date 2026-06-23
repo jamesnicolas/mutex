@@ -553,7 +553,7 @@ pub fn execute_run(
             crashes::InitCrashHandler {
                 session_id: id,
                 zed_version: VERSION.to_owned(),
-                binary: "zed-remote-server".to_string(),
+                binary: "mutex-remote-server".to_string(),
                 release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
                 commit_sha: option_env!("ZED_COMMIT_SHA").unwrap_or("no_sha").to_owned(),
             },
@@ -563,7 +563,7 @@ pub fn execute_run(
                     background_executor.spawn(task).detach();
                 }
             },
-            |pid| paths::temp_dir().join(format!("zed-remote-server-crash-handler-{pid}")),
+            |pid| paths::temp_dir().join(format!("mutex-remote-server-crash-handler-{pid}")),
             // we are running outside gpui
             #[allow(clippy::disallowed_methods)]
             |duration| FutureExt::map(Timer::after(duration), |_| ()),
@@ -839,7 +839,7 @@ pub(crate) fn execute_proxy(
             |task| {
                 smol::spawn(task).detach();
             },
-            |pid| paths::temp_dir().join(format!("zed-remote-server-proxy-crash-handler-{pid}")),
+            |pid| paths::temp_dir().join(format!("mutex-remote-server-proxy-crash-handler-{pid}")),
             // we are running outside gpui
             #[allow(clippy::disallowed_methods)]
             |duration| FutureExt::map(Timer::after(duration), |_| ()),
@@ -1295,7 +1295,7 @@ fn read_proxy_settings(cx: &mut Context<HeadlessProject>) -> Option<Url> {
 fn cleanup_old_binaries() -> Result<()> {
     let server_dir = paths::remote_server_dir_relative();
     let release_channel = release_channel::RELEASE_CHANNEL.dev_name();
-    let prefix = format!("zed-remote-server-{}-", release_channel);
+    let prefix = format!("mutex-remote-server-{}-", release_channel);
 
     for entry in std::fs::read_dir(server_dir.as_std_path())? {
         let path = entry?.path();

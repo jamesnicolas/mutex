@@ -51,7 +51,7 @@ You can install a local build on your machine with:
 ./script/install-linux
 ```
 
-This builds `zed` and the `cli` in release mode, installs the binary at `~/.local/bin/zed`, and installs `.desktop` files to `~/.local/share`.
+This builds `mutex` and the `cli` in release mode, installs the binary at `~/.local/bin/mutex`, and installs `.desktop` files to `~/.local/share`.
 
 > **_Note_**: If you encounter linker errors similar to the following:
 >
@@ -90,12 +90,12 @@ This section is for distribution maintainers packaging Mutex.
 
 Mutex has two main binaries:
 
-- You will need to build `crates/cli` and make its binary available in `$PATH` with the name `zed`.
-- You will need to build `crates/zed` and put it at `$PATH/to/cli/../../libexec/zed-editor`. For example, if you are going to put the cli at `~/.local/bin/zed` put zed at `~/.local/libexec/zed-editor`. As some linux distributions (notably Arch) discourage the use of `libexec`, you can also put this binary at `$PATH/to/cli/../../lib/zed/zed-editor` (e.g. `~/.local/lib/zed/zed-editor`) instead.
+- You will need to build `crates/cli` and make its binary available in `$PATH` with the name `mutex`.
+- You will need to build `crates/zed` and put it at `$PATH/to/cli/../../libexec/mutex-editor`. For example, if you are going to put the cli at `~/.local/bin/mutex` put Mutex at `~/.local/libexec/mutex-editor`. As some linux distributions (notably Arch) discourage the use of `libexec`, you can also put this binary at `$PATH/to/cli/../../lib/mutex/mutex-editor` (e.g. `~/.local/lib/mutex/mutex-editor`) instead.
 - If you are going to provide a `.desktop` file you can find a template in `crates/zed/resources/zed.desktop.in`, and use `envsubst` to populate it with the values required. This file should also be renamed to `$APP_ID.desktop` so that the file [follows the FreeDesktop standards](https://github.com/zed-industries/zed/issues/12707#issuecomment-2168742761). You should also make this desktop file executable (`chmod 755`).
 - You will need to ensure that the necessary libraries are installed. You can get the current list by [inspecting the built binary](https://github.com/zed-industries/zed/blob/935cf542aebf55122ce6ed1c91d0fe8711970c82/script/bundle-linux#L65-L67) on your system.
 - For an example of a complete build script, see [script/bundle-linux](https://github.com/zed-industries/zed/blob/935cf542aebf55122ce6ed1c91d0fe8711970c82/script/bundle-linux).
-- You can disable Mutex's auto updates and provide instructions for users who try to update Mutex manually by building (or running) Mutex with the environment variable `ZED_UPDATE_EXPLANATION`. For example: `ZED_UPDATE_EXPLANATION="Please use flatpak to update zed."`.
+- You can disable Mutex's auto updates and provide instructions for users who try to update Mutex manually by building (or running) Mutex with the environment variable `ZED_UPDATE_EXPLANATION`. For example: `ZED_UPDATE_EXPLANATION="Please use flatpak to update Mutex."`.
 - Make sure to update the contents of the `crates/zed/RELEASE_CHANNEL` file to 'nightly', 'preview', or 'stable', with no newline. This will cause Mutex to use the credentials manager to remember a user's login.
 
 ### Other things to note

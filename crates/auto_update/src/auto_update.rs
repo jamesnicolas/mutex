@@ -533,7 +533,7 @@ impl AutoUpdater {
             &this,
             release_channel,
             version,
-            "zed-remote-server",
+            "mutex-remote-server",
             os,
             arch,
             cx,
@@ -550,7 +550,7 @@ impl AutoUpdater {
 
         if smol::fs::metadata(&version_path).await.is_err() {
             log::info!(
-                "downloading zed-remote-server {os} {arch} version {}",
+                "downloading mutex-remote-server {os} {arch} version {}",
                 release.version
             );
             set_status("Downloading remote server", cx);
@@ -585,7 +585,7 @@ impl AutoUpdater {
         })?;
 
         let release =
-            Self::get_release_asset(&this, channel, version, "zed-remote-server", os, arch, cx)
+            Self::get_release_asset(&this, channel, version, "mutex-remote-server", os, arch, cx)
                 .await?;
 
         Ok(Some(release.url))
@@ -1040,12 +1040,12 @@ async fn install_release_linux(
     } else {
         String::default()
     };
-    let app_folder_name = format!("zed{}.app", suffix);
+    let app_folder_name = format!("mutex{}.app", suffix);
 
     let from = extracted.join(&app_folder_name);
     let mut to = home_dir.join(".local");
 
-    let expected_suffix = format!("{}/libexec/zed-editor", app_folder_name);
+    let expected_suffix = format!("{}/libexec/mutex-editor", app_folder_name);
 
     if let Some(prefix) = running_app_path
         .to_str()

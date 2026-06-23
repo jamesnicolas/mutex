@@ -65,7 +65,7 @@ See the [CLI Reference](./reference/cli.md) for all available options.
 3. Optionally, remove your settings and extensions:
 
 ```sh
-rm -rf ~/.config/zed
+rm -rf ~/.config/mutex
 rm -rf ~/Library/Application\ Support/Mutex
 rm -rf ~/Library/Caches/Mutex
 rm -rf ~/Library/Logs/Mutex
@@ -75,7 +75,7 @@ rm -rf ~/Library/Saved\ Application\ State/dev.mutex.Mutex.savedState
 If you installed the CLI, remove it with:
 
 ```sh
-rm /usr/local/bin/zed
+rm /usr/local/bin/mutex
 ```
 
 ## Troubleshooting

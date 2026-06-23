@@ -12,7 +12,7 @@ Support for Helm in Mutex is provided by the community-maintained [Helm extensio
 
 ## Setup
 
-Enable Helm language for Helm files by editing your `.zed/settings.json` and adding:
+Enable Helm language for Helm files by editing your `.mutex/settings.json` and adding:
 
 ```json [settings]
   "file_types": {

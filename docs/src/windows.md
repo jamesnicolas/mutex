@@ -9,14 +9,14 @@ description: "Get the latest stable builds via the download page. If you want to
 
 Get the latest stable builds via [the download page](https://mutex.dev/download). If you want to download our preview build, you can find it on its [releases page](https://mutex.dev/releases/preview). After the first manual installation, Mutex will periodically check for install updates.
 
-You can also build zed from source, see [these docs](https://mutex.dev/docs/development/windows) for instructions.
+You can also build Mutex from source, see [these docs](https://mutex.dev/docs/development/windows) for instructions.
 
 ### Package managers
 
 Additionally, you can install Mutex using winget:
 
 ```sh
-winget install -e --id ZedIndustries.Mutex
+winget install -e --id Mutex.Mutex
 ```
 
 ## Uninstall

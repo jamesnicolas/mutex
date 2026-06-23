@@ -153,9 +153,9 @@ fn publish_winget() -> NamedJob {
 
     fn set_package_name() -> (Step<Run>, StepOutput) {
         let script = r#"if ($env:IS_PRERELEASE -eq "true") {
-    $PACKAGE_NAME = "ZedIndustries.Mutex.Preview"
+    $PACKAGE_NAME = "Mutex.Mutex.Preview"
 } else {
-    $PACKAGE_NAME = "ZedIndustries.Mutex"
+    $PACKAGE_NAME = "Mutex.Mutex"
 }
 
 echo "PACKAGE_NAME=$PACKAGE_NAME" >> $env:GITHUB_OUTPUT

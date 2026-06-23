@@ -372,19 +372,19 @@ pub mod assets {
     // NOTE: these asset names also exist in the mutex.dev codebase.
     pub const MAC_AARCH64: &str = "Mutex-aarch64.dmg";
     pub const MAC_X86_64: &str = "Mutex-x86_64.dmg";
-    pub const LINUX_AARCH64: &str = "zed-linux-aarch64.tar.gz";
-    pub const LINUX_X86_64: &str = "zed-linux-x86_64.tar.gz";
+    pub const LINUX_AARCH64: &str = "mutex-linux-aarch64.tar.gz";
+    pub const LINUX_X86_64: &str = "mutex-linux-x86_64.tar.gz";
     pub const BWRAP_LINUX_AARCH64: &str = "bwrap-linux-aarch64.gz";
     pub const BWRAP_LINUX_X86_64: &str = "bwrap-linux-x86_64.gz";
     pub const WINDOWS_X86_64: &str = "Mutex-x86_64.exe";
     pub const WINDOWS_AARCH64: &str = "Mutex-aarch64.exe";
 
-    pub const REMOTE_SERVER_MAC_AARCH64: &str = "zed-remote-server-macos-aarch64.gz";
-    pub const REMOTE_SERVER_MAC_X86_64: &str = "zed-remote-server-macos-x86_64.gz";
-    pub const REMOTE_SERVER_LINUX_AARCH64: &str = "zed-remote-server-linux-aarch64.gz";
-    pub const REMOTE_SERVER_LINUX_X86_64: &str = "zed-remote-server-linux-x86_64.gz";
-    pub const REMOTE_SERVER_WINDOWS_AARCH64: &str = "zed-remote-server-windows-aarch64.zip";
-    pub const REMOTE_SERVER_WINDOWS_X86_64: &str = "zed-remote-server-windows-x86_64.zip";
+    pub const REMOTE_SERVER_MAC_AARCH64: &str = "mutex-remote-server-macos-aarch64.gz";
+    pub const REMOTE_SERVER_MAC_X86_64: &str = "mutex-remote-server-macos-x86_64.gz";
+    pub const REMOTE_SERVER_LINUX_AARCH64: &str = "mutex-remote-server-linux-aarch64.gz";
+    pub const REMOTE_SERVER_LINUX_X86_64: &str = "mutex-remote-server-linux-x86_64.gz";
+    pub const REMOTE_SERVER_WINDOWS_AARCH64: &str = "mutex-remote-server-windows-aarch64.zip";
+    pub const REMOTE_SERVER_WINDOWS_X86_64: &str = "mutex-remote-server-windows-x86_64.zip";
 
     pub fn all() -> Vec<&'static str> {
         vec![

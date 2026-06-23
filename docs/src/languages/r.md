@@ -111,7 +111,7 @@ TBD: Get this working
 
 ### REditorSupport/languageserver Configuration
 
-You can configure the [R languageserver settings](https://github.com/REditorSupport/languageserver#settings) via Mutex Project Settings `.zed/settings.json` or Mutex User Settings `~/.config/zed/settings.json`:
+You can configure the [R languageserver settings](https://github.com/REditorSupport/languageserver#settings) via Mutex Project Settings `.mutex/settings.json` or Mutex User Settings `~/.config/mutex/settings.json`:
 
 For example to disable Lintr linting and suppress code snippet suggestions (both enabled by default):
 

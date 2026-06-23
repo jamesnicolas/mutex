@@ -2589,7 +2589,7 @@ mod tests {
         fs.insert_tree(
             "/test",
             json!({
-                ".zed": {
+                ".mutex": {
                     "tasks.json": r#"[{"label": "test", "command": "echo"}]"#
                 },
                 "src": {

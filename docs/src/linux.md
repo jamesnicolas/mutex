@@ -77,56 +77,56 @@ If you'd prefer, you can install Mutex by downloading our pre-built .tar.gz. Thi
 
 Download the `.tar.gz` file:
 
-- [zed-linux-x86_64.tar.gz](https://cloud.mutex.dev/releases/stable/latest/download?asset=zed&arch=x86_64&os=linux&source=docs)
-  ([preview](https://cloud.mutex.dev/releases/preview/latest/download?asset=zed&arch=x86_64&os=linux&source=docs))
-- [zed-linux-aarch64.tar.gz](https://cloud.mutex.dev/releases/stable/latest/download?asset=zed&arch=aarch64&os=linux&source=docs)
-  ([preview](https://cloud.mutex.dev/releases/preview/latest/download?asset=zed&arch=aarch64&os=linux&source=docs))
+- [mutex-linux-x86_64.tar.gz](https://cloud.mutex.dev/releases/stable/latest/download?asset=mutex&arch=x86_64&os=linux&source=docs)
+  ([preview](https://cloud.mutex.dev/releases/preview/latest/download?asset=mutex&arch=x86_64&os=linux&source=docs))
+- [mutex-linux-aarch64.tar.gz](https://cloud.mutex.dev/releases/stable/latest/download?asset=mutex&arch=aarch64&os=linux&source=docs)
+  ([preview](https://cloud.mutex.dev/releases/preview/latest/download?asset=mutex&arch=aarch64&os=linux&source=docs))
 
-Then ensure that the `zed` binary in the tarball is on your path. The easiest way is to unpack the tarball and create a symlink:
+Then ensure that the `mutex` binary in the tarball is on your path. The easiest way is to unpack the tarball and create a symlink:
 
 ```sh
 mkdir -p ~/.local
-# extract zed to ~/.local/zed.app/
+# extract Mutex to ~/.local/mutex.app/
 tar -xvf <path/to/download>.tar.gz -C ~/.local
-# link the zed binary to ~/.local/bin (or another directory in your $PATH)
-ln -sf ~/.local/zed.app/bin/zed ~/.local/bin/zed
+# link the mutex binary to ~/.local/bin (or another directory in your $PATH)
+ln -sf ~/.local/mutex.app/bin/mutex ~/.local/bin/mutex
 ```
 
 If you'd like integration with an XDG-compatible desktop environment, you will also need to install the `.desktop` file:
 
 ```sh
-install -D ~/.local/zed.app/share/applications/dev.mutex.Mutex.desktop -t ~/.local/share/applications
-sed -i "s|Icon=zed|Icon=$HOME/.local/zed.app/share/icons/hicolor/512x512/apps/zed.png|g" ~/.local/share/applications/dev.mutex.Mutex.desktop
-sed -i "s|Exec=zed|Exec=$HOME/.local/zed.app/bin/zed|g" ~/.local/share/applications/dev.mutex.Mutex.desktop
+install -D ~/.local/mutex.app/share/applications/dev.mutex.Mutex.desktop -t ~/.local/share/applications
+sed -i "s|Icon=mutex|Icon=$HOME/.local/mutex.app/share/icons/hicolor/512x512/apps/mutex.png|g" ~/.local/share/applications/dev.mutex.Mutex.desktop
+sed -i "s|Exec=mutex|Exec=$HOME/.local/mutex.app/bin/mutex|g" ~/.local/share/applications/dev.mutex.Mutex.desktop
 ```
 
 ## Uninstalling Mutex
 
 ### Standard Uninstall
 
-If Mutex was installed using the default installation script, it can be uninstalled by supplying the `--uninstall` flag to the `zed` shell command
+If Mutex was installed using the default installation script, it can be uninstalled by supplying the `--uninstall` flag to the `mutex` shell command
 
 ```sh
-zed --uninstall
+mutex --uninstall
 ```
 
 If there are no errors, the shell will then prompt you whether you'd like to keep your preferences or delete them. After making a choice, you should see a message that Mutex was successfully uninstalled.
 
-In the case that the `zed` shell command was not found in your PATH, you can try one of the following commands
+In the case that the `mutex` shell command was not found in your PATH, you can try one of the following commands
 
 ```sh
-$HOME/.local/bin/zed --uninstall
+$HOME/.local/bin/mutex --uninstall
 ```
 
 or
 
 ```sh
-$HOME/.local/zed.app/bin.zed --uninstall
+$HOME/.local/mutex.app/bin/mutex --uninstall
 ```
 
-The first case might fail if a symlink was not properly established between `$HOME/.local/bin/zed` and `$HOME/.local/zed.app/bin.zed`. But the second case should work as long as Mutex was installed to its default location.
+The first case might fail if a symlink was not properly established between `$HOME/.local/bin/mutex` and `$HOME/.local/mutex.app/bin/mutex`. But the second case should work as long as Mutex was installed to its default location.
 
-If Mutex was installed to a different location, you must invoke the `zed` binary stored in that installation directory and pass the `--uninstall` flag to it in the same format as the previous commands.
+If Mutex was installed to a different location, you must invoke the `mutex` binary stored in that installation directory and pass the `--uninstall` flag to it in the same format as the previous commands.
 
 ### Package Manager
 

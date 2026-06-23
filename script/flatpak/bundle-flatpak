@@ -5,26 +5,26 @@ cd "$(dirname "$0")/../.."
 shopt -s extglob
 
 script/bundle-linux --flatpak
-archive_match="zed(-[a-zA-Z0-9]+)?-linux-$(uname -m)\.tar\.gz"
+archive_match="mutex(-[a-zA-Z0-9]+)?-linux-$(uname -m)\.tar\.gz"
 archive=$(ls "target/release" | grep -E ${archive_match})
 channel=$(<crates/zed/RELEASE_CHANNEL)
 
 export CHANNEL="$channel"
 export ARCHIVE="$archive"
 if [[ "$channel" == "dev" ]]; then
-    export APP_ID="dev.mutex.ZedDev"
+    export APP_ID="dev.mutex.Mutex-Dev"
     export APP_NAME="Mutex Devel"
     export BRANDING_LIGHT="#99c1f1"
     export BRANDING_DARK="#1a5fb4"
     export ICON_FILE="app-icon-dev"
 elif [[ "$channel" == "nightly" ]]; then
-    export APP_ID="dev.mutex.ZedNightly"
+    export APP_ID="dev.mutex.Mutex-Nightly"
     export APP_NAME="Mutex Nightly"
     export BRANDING_LIGHT="#e9aa6a"
     export BRANDING_DARK="#1a5fb4"
     export ICON_FILE="app-icon-nightly"
 elif [[ "$channel" == "preview" ]]; then
-    export APP_ID="dev.mutex.ZedPreview"
+    export APP_ID="dev.mutex.Mutex-Preview"
     export APP_NAME="Mutex Preview"
     export BRANDING_LIGHT="#99c1f1"
     export BRANDING_DARK="#1a5fb4"

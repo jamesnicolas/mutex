@@ -3552,11 +3552,11 @@ async fn test_local_settings(
         .insert_tree(
             "/dir",
             json!({
-                ".zed": {
+                ".mutex": {
                     "settings.json": r#"{ "tab_size": 2 }"#
                 },
                 "a": {
-                    ".zed": {
+                    ".mutex": {
                         "settings.json": r#"{ "tab_size": 8 }"#
                     },
                     "a.txt": "a-contents",
@@ -3600,7 +3600,7 @@ async fn test_local_settings(
     // As client A, update a settings file. As Client B, see the changed settings.
     client_a
         .fs()
-        .insert_file("/dir/.zed/settings.json", r#"{}"#.into())
+        .insert_file("/dir/.mutex/settings.json", r#"{}"#.into())
         .await;
     executor.run_until_parked();
     cx_b.read(|cx| {
@@ -3620,17 +3620,17 @@ async fn test_local_settings(
     // As client A, create and remove some settings files. As client B, see the changed settings.
     client_a
         .fs()
-        .remove_file("/dir/.zed/settings.json".as_ref(), Default::default())
+        .remove_file("/dir/.mutex/settings.json".as_ref(), Default::default())
         .await
         .unwrap();
     client_a
         .fs()
-        .create_dir("/dir/b/.zed".as_ref())
+        .create_dir("/dir/b/.mutex".as_ref())
         .await
         .unwrap();
     client_a
         .fs()
-        .insert_file("/dir/b/.zed/settings.json", r#"{"tab_size": 4}"#.into())
+        .insert_file("/dir/b/.mutex/settings.json", r#"{"tab_size": 4}"#.into())
         .await;
     executor.run_until_parked();
     cx_b.read(|cx| {
@@ -3657,11 +3657,14 @@ async fn test_local_settings(
     // As client A, change and remove settings files while client B is disconnected.
     client_a
         .fs()
-        .insert_file("/dir/a/.zed/settings.json", r#"{"hard_tabs":true}"#.into())
+        .insert_file(
+            "/dir/a/.mutex/settings.json",
+            r#"{"hard_tabs":true}"#.into(),
+        )
         .await;
     client_a
         .fs()
-        .remove_file("/dir/b/.zed/settings.json".as_ref(), Default::default())
+        .remove_file("/dir/b/.mutex/settings.json".as_ref(), Default::default())
         .await
         .unwrap();
     executor.run_until_parked();

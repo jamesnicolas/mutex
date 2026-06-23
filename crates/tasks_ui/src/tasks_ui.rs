@@ -411,7 +411,7 @@ mod tests {
         fs.insert_tree(
             path!("/dir"),
             json!({
-                ".zed": {
+                ".mutex": {
                     "tasks.json": r#"[
                             {
                                 "label": "example task",

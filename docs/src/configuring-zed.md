@@ -30,8 +30,8 @@ Your user settings apply globally across all projects. Open the file with {#kb z
 
 The file is located at:
 
-- macOS: `~/.config/zed/settings.json`
-- Linux: `~/.config/zed/settings.json` (or `$XDG_CONFIG_HOME/zed/settings.json`)
+- macOS: `~/.config/mutex/settings.json`
+- Linux: `~/.config/mutex/settings.json` (or `$XDG_CONFIG_HOME/mutex/settings.json`)
 - Windows: `%APPDATA%\Mutex\settings.json`
 
 The syntax is JSON with support for `//` comments.
@@ -42,12 +42,12 @@ To see all available settings with their default values, run {#action zed::OpenD
 
 ### Project Settings
 
-Override user settings for a specific project by creating a `.zed/settings.json` file in your project root. Run {#action zed::OpenProjectSettings} to create this file.
+Override user settings for a specific project by creating a `.mutex/settings.json` file in your project root. Run {#action zed::OpenProjectSettings} to create this file.
 
 Project settings take precedence over user settings for that project only.
 
 ```json [settings]
-// .zed/settings.json
+// .mutex/settings.json
 {
   "tab_size": 2,
   "formatter": "prettier",

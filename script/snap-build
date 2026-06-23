@@ -11,11 +11,11 @@ mkdir -p snap/gui
 
 export DO_STARTUP_NOTIFY="true"
 export APP_NAME="Mutex"
-export APP_CLI="zed"
-export APP_ICON="\${SNAP}/meta/gui/zed.png"
+export APP_CLI="mutex"
+export APP_ICON="\${SNAP}/meta/gui/mutex.png"
 export APP_ARGS="%U"
-envsubst < "crates/zed/resources/zed.desktop.in" > "snap/gui/zed.desktop"
-cp "crates/zed/resources/app-icon.png" "snap/gui/zed.png"
+envsubst < "crates/zed/resources/zed.desktop.in" > "snap/gui/mutex.desktop"
+cp "crates/zed/resources/app-icon.png" "snap/gui/mutex.png"
 
 RELEASE_VERSION="$1" envsubst < crates/zed/resources/snap/snapcraft.yaml.in > snap/snapcraft.yaml
 

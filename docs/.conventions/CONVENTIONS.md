@@ -136,13 +136,13 @@ Use inline `code` for:
 - Setting names: `vim_mode`, `buffer_font_size`
 - Keybindings: `cmd-shift-p`, `ctrl-w h`
 - Commands: `:w`, `:q`
-- File paths: `~/.config/zed/settings.json`
+- File paths: `~/.config/mutex/settings.json`
 - Action names: `git::Commit`
 - Values: `true`, `false`, `"eager"`
 
 ### Action and Keybinding References
 
-Use Zed's special syntax for dynamic rendering:
+Use Mutex's special syntax for dynamic rendering:
 
 - {#action git::Commit} — Renders the action name
 - {#kb git::Commit} — Renders the keybinding for that action
@@ -309,13 +309,13 @@ For JSON-only settings (complex types without UI support), note this and link to
 
 ### Settings File Locations
 
-- **macOS/Linux:** `~/.config/zed/settings.json`
-- **Windows:** `%AppData%\Zed\settings.json`
+- **macOS/Linux:** `~/.config/mutex/settings.json`
+- **Windows:** `%AppData%\Mutex\settings.json`
 
 ### Keymap File Locations
 
-- **macOS/Linux:** `~/.config/zed/keymap.json`
-- **Windows:** `%AppData%\Zed\keymap.json`
+- **macOS/Linux:** `~/.config/mutex/keymap.json`
+- **Windows:** `%AppData%\Mutex\keymap.json`
 
 ---
 

@@ -101,9 +101,9 @@ function GenerateLicenses {
 
 function BuildZedAndItsFriends {
     Write-Output "Building Mutex and its friends, for channel: $channel"
-    # Build zed.exe, cli.exe and auto_update_helper.exe
+    # Build mutex.exe, cli.exe and auto_update_helper.exe
     cargo build --release --package zed --package cli --package auto_update_helper --target $target
-    Copy-Item -Path ".\$CargoOutDir\zed.exe" -Destination "$innoDir\Mutex.exe" -Force
+    Copy-Item -Path ".\$CargoOutDir\mutex.exe" -Destination "$innoDir\Mutex.exe" -Force
     Copy-Item -Path ".\$CargoOutDir\cli.exe" -Destination "$innoDir\cli.exe" -Force
     Copy-Item -Path ".\$CargoOutDir\auto_update_helper.exe" -Destination "$innoDir\auto_update_helper.exe" -Force
     # Build explorer_command_injector.dll
@@ -118,7 +118,7 @@ function BuildZedAndItsFriends {
             cargo build --release --package explorer_command_injector --target $target
         }
     }
-    Copy-Item -Path ".\$CargoOutDir\explorer_command_injector.dll" -Destination "$innoDir\zed_explorer_command_injector.dll" -Force
+    Copy-Item -Path ".\$CargoOutDir\explorer_command_injector.dll" -Destination "$innoDir\mutex_explorer_command_injector.dll" -Force
 }
 
 function BuildRemoteServer {
@@ -133,7 +133,7 @@ function BuildRemoteServer {
         & "$innoDir\sign.ps1" $remoteServerSrc
     }
 
-    $remoteServerDst = "$env:ZED_WORKSPACE\target\zed-remote-server-windows-$Architecture.zip"
+    $remoteServerDst = "$env:ZED_WORKSPACE\target\mutex-remote-server-windows-$Architecture.zip"
     Write-Output "Compressing remote_server to $remoteServerDst"
     Compress-Archive -Path $remoteServerSrc -DestinationPath $remoteServerDst -Force
 
@@ -142,14 +142,14 @@ function BuildRemoteServer {
 
 function ZipZedAndItsFriendsDebug {
     $items = @(
-        ".\$CargoOutDir\zed.pdb",
+        ".\$CargoOutDir\mutex.pdb",
         ".\$CargoOutDir\cli.pdb",
         ".\$CargoOutDir\auto_update_helper.pdb",
         ".\$CargoOutDir\explorer_command_injector.pdb",
         ".\$CargoOutDir\remote_server.pdb"
     )
 
-    Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\zed-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
+    Compress-Archive -Path $items -DestinationPath ".\$CargoOutDir\mutex-$env:RELEASE_VERSION-$env:ZED_RELEASE_CHANNEL.dbg.zip" -Force
 }
 
 
@@ -163,10 +163,10 @@ function UploadToSentry {
         Write-Output "missing SENTRY_AUTH_TOKEN. skipping sentry upload."
         return
     }
-    Write-Output "Uploading zed debug symbols to sentry..."
+    Write-Output "Uploading Mutex debug symbols to sentry..."
     for ($i = 1; $i -le 3; $i++) {
         try {
-            sentry-cli debug-files upload --include-sources --wait -p zed -o zed-dev $CargoOutDir
+            sentry-cli debug-files upload --include-sources --wait -p mutex -o mutex-dev $CargoOutDir
             break
         }
         catch {
@@ -196,7 +196,7 @@ function MakeAppx {
     # Add makeAppx.exe to Path
     $sdk = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"
     $env:Path += ';' + $sdk
-    makeAppx.exe pack /d "$innoDir\make_appx" /p "$innoDir\zed_explorer_command_injector.appx" /nv
+    makeAppx.exe pack /d "$innoDir\make_appx" /p "$innoDir\mutex_explorer_command_injector.appx" /nv
 }
 
 function SignZedAndItsFriends {
@@ -204,7 +204,7 @@ function SignZedAndItsFriends {
         return
     }
 
-    $files = "$innoDir\Mutex.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
+    $files = "$innoDir\Mutex.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\mutex_explorer_command_injector.dll,$innoDir\mutex_explorer_command_injector.appx"
     & "$innoDir\sign.ps1" $files
 }
 
@@ -226,10 +226,10 @@ function DownloadConpty {
 }
 
 function CollectFiles {
-    Move-Item -Path "$innoDir\zed_explorer_command_injector.appx" -Destination "$innoDir\appx\zed_explorer_command_injector.appx" -Force
-    Move-Item -Path "$innoDir\zed_explorer_command_injector.dll" -Destination "$innoDir\appx\zed_explorer_command_injector.dll" -Force
-    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\zed.exe" -Force
-    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\zed" -Force
+    Move-Item -Path "$innoDir\mutex_explorer_command_injector.appx" -Destination "$innoDir\appx\mutex_explorer_command_injector.appx" -Force
+    Move-Item -Path "$innoDir\mutex_explorer_command_injector.dll" -Destination "$innoDir\appx\mutex_explorer_command_injector.dll" -Force
+    Move-Item -Path "$innoDir\cli.exe" -Destination "$innoDir\bin\mutex.exe" -Force
+    Move-Item -Path "$innoDir\zed.sh" -Destination "$innoDir\bin\mutex" -Force
     Move-Item -Path "$innoDir\auto_update_helper.exe" -Destination "$innoDir\tools\auto_update_helper.exe" -Force
     if($Architecture -eq "aarch64") {
         New-Item -Type Directory -Path "$innoDir\arm64" -Force
@@ -259,9 +259,11 @@ function BuildInstaller {
             $appMutex = "Mutex-Stable-Instance-Mutex"
             $appExeName = "Mutex"
             $regValueName = "Mutex"
-            $appUserId = "ZedIndustries.Mutex"
-            $appShellNameShort = "Z&ed"
-            $appAppxFullName = "ZedIndustries.Zed_1.0.0.0_neutral__japxn1gcva8rg"
+            $appUserId = "MutexIndustries.Mutex"
+            $appShellNameShort = "M&utex"
+            $appAppxFullName = "MutexIndustries.Mutex_1.0.0.0_neutral__japxn1gcva8rg"
+            $legacyAppxFullName = "ZedIndustries.Zed_1.0.0.0_neutral__japxn1gcva8rg"
+            $transitionalAppxFullName = "ZedIndustries.Mutex_1.0.0.0_neutral__japxn1gcva8rg"
         }
         "preview" {
             $appId = "{{F70E4811-D0E2-4D88-AC99-D63752799F95}"
@@ -272,10 +274,12 @@ function BuildInstaller {
             # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
             $appMutex = "Mutex-Preview-Instance-Mutex"
             $appExeName = "Mutex"
-            $regValueName = "ZedPreview"
-            $appUserId = "ZedIndustries.Mutex.Preview"
-            $appShellNameShort = "Z&ed Preview"
-            $appAppxFullName = "ZedIndustries.Mutex.Preview_1.0.0.0_neutral__japxn1gcva8rg"
+            $regValueName = "MutexPreview"
+            $appUserId = "MutexIndustries.Mutex.Preview"
+            $appShellNameShort = "M&utex Preview"
+            $appAppxFullName = "MutexIndustries.Mutex.Preview_1.0.0.0_neutral__japxn1gcva8rg"
+            $legacyAppxFullName = "ZedIndustries.Zed.Preview_1.0.0.0_neutral__japxn1gcva8rg"
+            $transitionalAppxFullName = "ZedIndustries.Mutex.Preview_1.0.0.0_neutral__japxn1gcva8rg"
         }
         "nightly" {
             $appId = "{{1BDB21D3-14E7-433C-843C-9C97382B2FE0}"
@@ -286,10 +290,12 @@ function BuildInstaller {
             # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
             $appMutex = "Mutex-Nightly-Instance-Mutex"
             $appExeName = "Mutex"
-            $regValueName = "ZedNightly"
-            $appUserId = "ZedIndustries.Mutex.Nightly"
-            $appShellNameShort = "Z&ed Editor Nightly"
-            $appAppxFullName = "ZedIndustries.Mutex.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
+            $regValueName = "MutexNightly"
+            $appUserId = "MutexIndustries.Mutex.Nightly"
+            $appShellNameShort = "M&utex Nightly"
+            $appAppxFullName = "MutexIndustries.Mutex.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
+            $legacyAppxFullName = "ZedIndustries.Zed.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
+            $transitionalAppxFullName = "ZedIndustries.Mutex.Nightly_1.0.0.0_neutral__japxn1gcva8rg"
         }
         "dev" {
             $appId = "{{8357632E-24A4-4F32-BA97-E575B4D1FE5D}"
@@ -300,10 +306,12 @@ function BuildInstaller {
             # The mutex name here should match the mutex name in crates\zed\src\zed\windows_only_instance.rs
             $appMutex = "Mutex-Dev-Instance-Mutex"
             $appExeName = "Mutex"
-            $regValueName = "ZedDev"
-            $appUserId = "ZedIndustries.Mutex.Dev"
-            $appShellNameShort = "Z&ed Dev"
-            $appAppxFullName = "ZedIndustries.Mutex.Dev_1.0.0.0_neutral__japxn1gcva8rg"
+            $regValueName = "MutexDev"
+            $appUserId = "MutexIndustries.Mutex.Dev"
+            $appShellNameShort = "M&utex Dev"
+            $appAppxFullName = "MutexIndustries.Mutex.Dev_1.0.0.0_neutral__japxn1gcva8rg"
+            $legacyAppxFullName = "ZedIndustries.Zed.Dev_1.0.0.0_neutral__japxn1gcva8rg"
+            $transitionalAppxFullName = "ZedIndustries.Mutex.Dev_1.0.0.0_neutral__japxn1gcva8rg"
         }
         default {
             Write-Error "can't bundle installer for $channel."
@@ -331,7 +339,9 @@ function BuildInstaller {
         "AppUserId"      = $appUserId
         "Version"        = "$env:RELEASE_VERSION"
         "SourceDir"      = "$env:ZED_WORKSPACE"
-        "AppxFullName"   = $appAppxFullName
+        "AppxFullName"             = $appAppxFullName
+        "LegacyAppxFullName"       = $legacyAppxFullName
+        "TransitionalAppxFullName" = $transitionalAppxFullName
     }
 
     $defs = @()
@@ -386,7 +396,7 @@ if ($buildSuccess) {
     Write-Output "Build successful"
     if ($Install) {
         Write-Output "Installing Mutex..."
-        Start-Process -FilePath "$env:ZED_WORKSPACE/target/ZedEditorUserSetup-x64-$env:RELEASE_VERSION.exe"
+        Start-Process -FilePath "$env:ZED_WORKSPACE/target/Mutex-$Architecture.exe"
     }
     exit 0
 }

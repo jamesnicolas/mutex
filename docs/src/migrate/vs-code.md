@@ -265,7 +265,7 @@ In Mutex:
 
 - **Add Folder to Project**: If you want multiple folders in the same project (like VS Code’s multi-root), use File > Add Folder to Project. This adds another root to your current project’s file tree.
 
-- **Per-project settings are optional**: You can add a `.zed/settings.json` file inside a project to override global settings.
+- **Per-project settings are optional**: You can add a `.mutex/settings.json` file inside a project to override global settings.
 
 - **You can start from a single file or an empty window**: Mutex doesn’t require you to open a folder to begin editing.
 

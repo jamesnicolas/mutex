@@ -1679,7 +1679,7 @@
     // project's directory name is automatically appended so that
     // sibling repos don't collide. For example, with the default
     // "../worktrees" and a project at ~/code/mutex, worktrees are
-    // created under ~/code/worktrees/zed/.
+    // created under ~/code/worktrees/mutex/.
     //
     // When the resolved directory is inside the project root, no
     // extra component is added (it's already project-scoped).
@@ -1724,8 +1724,8 @@
       "**/*.crt",
       "**/.dev.vars",
       "**/secrets.yml",
-      "**/.mutex/settings.json", // zed project settings
-      "/**/mutex/settings.json", // zed user settings
+      "**/.mutex/settings.json", // Mutex project settings
+      "/**/mutex/settings.json", // Mutex user settings
       "/**/mutex/keymap.json",
     ],
     // When to show edit predictions previews in buffer.

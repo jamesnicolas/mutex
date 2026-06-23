@@ -35766,7 +35766,7 @@ async fn test_local_worktree_trust(cx: &mut TestAppContext) {
     fs.insert_tree(
         path!("/project"),
         json!({
-            ".zed": {
+            ".mutex": {
                 "settings.json": r#"{"languages":{"Rust":{"language_servers":["override-rust-analyzer"]}}}"#
             },
             "main.rs": "fn main() {}"
@@ -35863,7 +35863,7 @@ async fn test_local_worktree_trust(cx: &mut TestAppContext) {
             )
             .language_servers,
             ["...".to_string()],
-            "local .zed/settings.json must not apply before trust approval"
+            "local .mutex/settings.json must not apply before trust approval"
         )
     });
 
@@ -35896,7 +35896,7 @@ async fn test_local_worktree_trust(cx: &mut TestAppContext) {
             )
             .language_servers,
             ["override-rust-analyzer".to_string()],
-            "local .zed/settings.json should apply after trust approval"
+            "local .mutex/settings.json should apply after trust approval"
         )
     });
     let _fake_language_server = fake_language_server.await.unwrap();

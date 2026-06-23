@@ -252,11 +252,11 @@ To add custom instructions that apply only to commit message generation, use the
 }
 ```
 
-These instructions are sent to the model in addition to any instruction files, such as `.rules` or `AGENTS.md`. To add instructions that apply to both commit messages and the agent more broadly, use the global `AGENTS.md` file located `~/.config/zed/AGENTS.md` on macOS and Linux, `%APPDATA%\Zed\AGENTS.md` on Windows.
+These instructions are sent to the model in addition to any instruction files, such as `.rules` or `AGENTS.md`. To add instructions that apply to both commit messages and the agent more broadly, use the global `AGENTS.md` file located `~/.config/mutex/AGENTS.md` on macOS and Linux, `%APPDATA%\Mutex\AGENTS.md` on Windows.
 
 ## Git Integrations {#git-integrations}
 
-Zed integrates with popular Git hosting services to ensure that Git commit hashes and references to Issues, Pull Requests, and Merge Requests become clickable links.
+Mutex integrates with popular Git hosting services to ensure that Git commit hashes and references to Issues, Pull Requests, and Merge Requests become clickable links.
 
 Zed currently supports links to the hosted versions of
 [GitHub](https://github.com),

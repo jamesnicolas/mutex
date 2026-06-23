@@ -88,7 +88,9 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}.exe"; Tasks: de
 Filename: "{app}\{#AppExeName}.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall; Check: WizardNotSilent
 
 [UninstallRun]
-Filename: "powershell.exe"; Parameters: "Invoke-Command -ScriptBlock {{Remove-AppxPackage -Package ""{#AppxFullName}""}"; Check: IsWindows11OrLater; Flags: shellexec waituntilterminated runhidden
+Filename: "powershell.exe"; Parameters: "Invoke-Command -ScriptBlock {{Remove-AppxPackage -Package ""{#AppxFullName}"" -ErrorAction SilentlyContinue}"; Check: IsWindows11OrLater; Flags: shellexec waituntilterminated runhidden
+Filename: "powershell.exe"; Parameters: "Invoke-Command -ScriptBlock {{Remove-AppxPackage -Package ""{#LegacyAppxFullName}"" -ErrorAction SilentlyContinue}"; Check: IsWindows11OrLater; Flags: shellexec waituntilterminated runhidden
+Filename: "powershell.exe"; Parameters: "Invoke-Command -ScriptBlock {{Remove-AppxPackage -Package ""{#TransitionalAppxFullName}"" -ErrorAction SilentlyContinue}"; Check: IsWindows11OrLater; Flags: shellexec waituntilterminated runhidden
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\.ascx\OpenWithProgids"; ValueType: none; ValueName: "{#RegValueName}"; Flags: deletevalue uninsdeletevalue; Tasks: associatewithfiles
@@ -1256,10 +1258,10 @@ Root: HKCU; Subkey: "Software\Classes\Drive\shell\{#RegValueName}\command"; Valu
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{code:AddToPath|{app}\bin}"; Tasks: addtopath; Check: NeedsAddToPath(ExpandConstant('{app}\bin'))
 
 ; URI Scheme
-Root: HKCU; Subkey: "Software\Classes\zed"; ValueType: "string"; ValueData: "URL:zed Protocol"; Flags: uninsdeletekey
-Root: HKCU; Subkey: "Software\Classes\zed"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
-Root: HKCU; Subkey: "Software\Classes\zed\DefaultIcon"; ValueType: "string"; ValueData: "{app}\Mutex.exe,1"
-Root: HKCU; Subkey: "Software\Classes\zed\shell\open\command"; ValueType: "string"; ValueData: """{app}\Mutex.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\mutex"; ValueType: "string"; ValueData: "URL:mutex Protocol"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\mutex"; ValueType: "string"; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\mutex\DefaultIcon"; ValueType: "string"; ValueData: "{app}\Mutex.exe,1"
+Root: HKCU; Subkey: "Software\Classes\mutex\shell\open\command"; ValueType: "string"; ValueData: """{app}\Mutex.exe"" ""%1"""
 
 [Code]
 function WizardNotSilent(): Boolean;
@@ -1365,7 +1367,7 @@ var
   AddAppxPackageResultCode: Integer;
 begin
   if WizardIsTaskSelected('addcontextmenufiles') then begin
-    ShellExec('', 'powershell.exe', '-Command ' + AddQuotes('Add-AppxPackage -Path ''' + ExpandConstant('{app}\appx\zed_explorer_command_injector.appx') + ''' -ExternalLocation ''' + ExpandConstant('{app}\appx') + ''''), '', SW_HIDE, ewWaitUntilTerminated, AddAppxPackageResultCode);
+    ShellExec('', 'powershell.exe', '-Command ' + AddQuotes('Add-AppxPackage -Path ''' + ExpandConstant('{app}\appx\mutex_explorer_command_injector.appx') + ''' -ExternalLocation ''' + ExpandConstant('{app}\appx') + ''''), '', SW_HIDE, ewWaitUntilTerminated, AddAppxPackageResultCode);
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\*\shell\{#RegValueName}');
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\directory\shell\{#RegValueName}');
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\directory\background\shell\{#RegValueName}');
@@ -1373,11 +1375,18 @@ begin
   end;
 end;
 
-procedure RemoveAppxPackage();
+procedure RemoveAppxPackageByName(AppxPackageName: string);
 var
   RemoveAppxPackageResultCode: Integer;
 begin
-  ShellExec('', 'powershell.exe', '-Command ' + AddQuotes('Remove-AppxPackage -Package ''{#AppxFullName}'''), '', SW_HIDE, ewWaitUntilTerminated, RemoveAppxPackageResultCode);
+  ShellExec('', 'powershell.exe', '-Command ' + AddQuotes('Remove-AppxPackage -Package ''' + AppxPackageName + ''' -ErrorAction SilentlyContinue'), '', SW_HIDE, ewWaitUntilTerminated, RemoveAppxPackageResultCode);
+end;
+
+procedure RemoveAppxPackage();
+begin
+  RemoveAppxPackageByName('{#AppxFullName}');
+  RemoveAppxPackageByName('{#LegacyAppxFullName}');
+  RemoveAppxPackageByName('{#TransitionalAppxFullName}');
   if not WizardIsTaskSelected('addcontextmenufiles') then begin
     RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\{#RegValueName}ContextMenu');
   end;

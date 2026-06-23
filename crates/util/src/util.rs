@@ -307,28 +307,28 @@ pub fn get_shell_safe_zed_path(shell_kind: shell::ShellKind) -> anyhow::Result<S
         .context("Failed to shell-escape Mutex executable path.")
 }
 
-/// Returns a path for the zed cli executable, this function
-/// should be called from the zed executable, not zed-cli.
+/// Returns a path for the Mutex CLI executable, this function
+/// should be called from the Mutex executable, not the Mutex CLI.
 pub fn get_zed_cli_path() -> Result<PathBuf> {
     use anyhow::Context as _;
     let zed_path =
-        std::env::current_exe().context("Failed to determine current zed executable path.")?;
+        std::env::current_exe().context("Failed to determine current Mutex executable path.")?;
     let parent = zed_path
         .parent()
-        .context("Failed to determine parent directory of zed executable path.")?;
+        .context("Failed to determine parent directory of Mutex executable path.")?;
 
     let possible_locations: &[&str] = if cfg!(target_os = "macos") {
-        // On macOS, the zed executable and zed-cli are inside the app bundle,
+        // On macOS, the Mutex executable and CLI are inside the app bundle,
         // so here ./cli is for both installed and development builds.
         &["./cli"]
     } else if cfg!(target_os = "windows") {
-        // bin/zed.exe is for installed builds, ./cli.exe is for development builds.
-        &["bin/zed.exe", "./cli.exe"]
+        // bin/mutex.exe is for installed builds, ./cli.exe is for development builds.
+        &["bin/mutex.exe", "./cli.exe"]
     } else if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
         // bin is the standard, ./cli is for the target directory in development builds.
-        &["../bin/zed", "./cli"]
+        &["../bin/mutex", "./cli"]
     } else {
-        anyhow::bail!("unsupported platform for determining zed-cli path");
+        anyhow::bail!("unsupported platform for determining Mutex CLI path");
     };
 
     possible_locations

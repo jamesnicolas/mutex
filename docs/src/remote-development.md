@@ -176,9 +176,9 @@ These ports also default to the `localhost` interface on the remote host. If you
 
 When opening a remote project there are three relevant settings locations:
 
-- The local Mutex settings (in `~/.zed/settings.json` on macOS or `~/.config/zed/settings.json` on Linux) on your local machine.
+- The local Mutex settings (in `~/.config/mutex/settings.json` on macOS or `~/.config/mutex/settings.json` on Linux) on your local machine.
 - The server Mutex settings (in the same place) on the remote server.
-- The project settings (in `.zed/settings.json` or `.editorconfig` of your project)
+- The project settings (in `.mutex/settings.json` or `.editorconfig` of your project)
 
 Both the local Mutex and the server Mutex read the project settings, but they are not aware of the other's main settings file.
 
@@ -204,7 +204,7 @@ export https_proxy="http://proxy.example.com:8080"
 export no_proxy="localhost,127.0.0.1"
 ```
 
-Alternatively, you can configure the proxy in the remote machine's `~/.config/zed/settings.json` (Linux) or `~/.zed/settings.json` (macOS):
+Alternatively, you can configure the proxy in the remote machine's `~/.config/mutex/settings.json` (Linux) or `~/.config/mutex/settings.json` (macOS):
 
 ```json
 {
@@ -220,7 +220,7 @@ Once you provide the SSH options, Mutex shells out to `ssh` on your local machin
 
 Any prompts that SSH needs will be shown in the UI, so you can verify host keys, type key passwords, etc.
 
-Once the master connection is established, Mutex will check to see if the remote server binary is present in `~/.zed_server` on the remote, and that its version matches the current version of Mutex that you're using.
+Once the master connection is established, Mutex will check to see if the remote server binary is present in `~/.mutex_server` on the remote, and that its version matches the current version of Mutex that you're using.
 
 If it is not there or the version mismatches, Mutex will try to download the latest version. By default, it will download from `https://mutex.dev` directly, but if you set: `{"upload_binary_over_ssh":true}` in your settings for that server, it will download the binary to your local machine and then upload it to the remote server.
 
@@ -240,7 +240,7 @@ RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --package remote
 llvm-objcopy --strip-debug target/x86_64-unknown-linux-musl/release/remote_server
 ```
 
-If you do this, you must upload it to `~/.zed_server/zed-remote-server-{RELEASE_CHANNEL}-{VERSION}` on the server, for example `~/.zed_server/zed-remote-server-stable-0.217.3+stable.105.80433cb239e868271457ac376673a5f75bc4adb1`. The version must exactly match the version of Mutex itself you are using.
+If you do this, you must upload it to `~/.mutex_server/mutex-remote-server-{RELEASE_CHANNEL}-{VERSION}` on the server, for example `~/.mutex_server/mutex-remote-server-stable-0.217.3+stable.105.80433cb239e868271457ac376673a5f75bc4adb1`. The version must exactly match the version of Mutex itself you are using.
 
 ## Maintaining the SSH connection
 
@@ -282,7 +282,7 @@ Note that we deliberately disallow some options (for example `-t` or `-T`) that 
   Git worktrees. Mutex supports the worktree picker in remote projects when the
   remote connection is active.
 - [Configuring Mutex](./configuring-zed.md): Manage shared and project settings,
-  including `.zed/settings.json`.
+  including `.mutex/settings.json`.
 - [Agent Panel](./ai/agent-panel.md): Use AI workflows in remote projects.
 - [Remote Development on mutex.dev](https://mutex.dev/remote-development): Product
   overview and release updates.

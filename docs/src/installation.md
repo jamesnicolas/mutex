@@ -30,7 +30,7 @@ Get the latest stable builds via [the download page](https://mutex.dev/download)
 Additionally, you can install Mutex using winget:
 
 ```sh
-winget install -e --id ZedIndustries.Mutex
+winget install -e --id Mutex.Mutex
 ```
 
 ### Linux

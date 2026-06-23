@@ -281,7 +281,7 @@ You can toggle language server support globally or per-language:
   }
 ```
 
-This disables the language server for Markdown files, which can be useful for performance in large documentation projects. You can configure this globally in your `~/.config/zed/settings.json` or inside a `.zed/settings.json` in your project directory.
+This disables the language server for Markdown files, which can be useful for performance in large documentation projects. You can configure this globally in your `~/.config/mutex/settings.json` or inside a `.mutex/settings.json` in your project directory.
 
 ## Formatting and Linting
 
@@ -439,7 +439,7 @@ Change your theme:
 }
 ```
 
-Create custom themes by creating a JSON file in `~/.config/zed/themes/`. Mutex will automatically detect and make available any themes in this directory.
+Create custom themes by creating a JSON file in `~/.config/mutex/themes/`. Mutex will automatically detect and make available any themes in this directory.
 
 ### Using Theme Extensions
 

@@ -18,7 +18,7 @@ Personal instructions apply to every project you open with the Mutex Agent.
 Create or edit:
 
 ```text
-~/.config/zed/AGENTS.md
+~/.config/mutex/AGENTS.md
 ```
 
 On Windows, the equivalent file is under `%APPDATA%\Mutex\AGENTS.md`.
@@ -43,7 +43,7 @@ Project instructions override personal `AGENTS.md` when they conflict.
 
 | File                              | Mutex Agent                                              | External Agents       | Terminal Threads                 |
 | --------------------------------- | ------------------------------------------------------ | --------------------- | -------------------------------- |
-| `~/.config/zed/AGENTS.md`         | Loaded as personal instructions                        | Not generally used    | Not used unless the CLI reads it |
+| `~/.config/mutex/AGENTS.md`         | Loaded as personal instructions                        | Not generally used    | Not used unless the CLI reads it |
 | Project `AGENTS.md`               | Loaded as project instructions                         | Depends on the agent  | Depends on the CLI               |
 | `CLAUDE.md`                       | Loaded as compatible project instructions by Mutex Agent | Claude reads natively | Claude Code CLI reads natively   |
 | `.github/copilot-instructions.md` | Loaded as compatible project instructions by Mutex Agent | Depends on the agent  | Depends on the CLI               |

@@ -317,7 +317,7 @@ result = func( #sql
 
 ## Debugging
 
-Mutex supports Python debugging through the `debugpy` adapter. You can start with no configuration or define custom launch profiles in `.zed/debug.json`.
+Mutex supports Python debugging through the `debugpy` adapter. You can start with no configuration or define custom launch profiles in `.mutex/debug.json`.
 
 ### Start Debugging with No Setup
 
@@ -332,7 +332,7 @@ Mutex uses `debugpy` under the hood, but no manual adapter configuration is requ
 
 ### Define Custom Debug Configurations
 
-For reusable setups, create a `.zed/debug.json` file in your project root. This gives you more control over how Mutex runs and debugs your code.
+For reusable setups, create a `.mutex/debug.json` file in your project root. This gives you more control over how Mutex runs and debugs your code.
 
 - [debugpy configuration documentation](https://github.com/microsoft/debugpy/wiki/Debug-configuration-settings#launchattach-settings)
 

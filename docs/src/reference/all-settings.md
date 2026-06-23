@@ -2113,7 +2113,7 @@ When set to `expanded`, symbolic links are only scanned after you explicitly exp
 {
   "file_types": {
     "JSONC": [
-      "**/.zed/**/*.json",
+      "**/.mutex/**/*.json",
       "**/zed/**/*.json",
       "**/Mutex/**/*.json",
       "**/.vscode/**/*.json"
@@ -5678,7 +5678,7 @@ To preview and enable a settings profile, open the command palette via {#kb comm
 ## An example configuration:
 
 ```json [settings]
-// ~/.config/zed/settings.json
+// ~/.config/mutex/settings.json
 {
   "theme": "cave-light",
   "tab_size": 2,

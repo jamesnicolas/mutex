@@ -44,7 +44,7 @@ To completely remove all Mutex configuration files and data:
    - `~/Library/Logs/Mutex`
    - `~/Library/Caches/dev.mutex.Mutex`
    - `~/Library/Caches/Mutex`
-   - `~/.config/zed`
+   - `~/.config/mutex`
    - `~/.local/state/Mutex`
 
 ## Linux
@@ -59,16 +59,16 @@ zed --uninstall
 
 You'll be prompted whether to keep or delete your preferences. After making a choice, you should see a message that Mutex was successfully uninstalled.
 
-If the `zed` command is not found in your PATH, try:
+If the `mutex` command is not found in your PATH, try:
 
 ```sh
-$HOME/.local/bin/zed --uninstall
+$HOME/.local/bin/mutex --uninstall
 ```
 
 or:
 
 ```sh
-$HOME/.local/zed.app/bin/zed --uninstall
+$HOME/.local/mutex.app/bin/mutex --uninstall
 ```
 
 ### Package Manager
@@ -79,9 +79,9 @@ If you installed Mutex using a package manager (such as Flatpak, Snap, or a dist
 
 If the uninstall command fails or Mutex was installed to a custom location, you can manually remove:
 
-- Installation directory: `~/.local/zed.app` (or your custom installation path)
-- Binary symlink: `~/.local/bin/zed`
-- Configuration and data: `~/.config/zed`
+- Installation directory: `~/.local/mutex.app` (or your custom installation path)
+- Binary symlink: `~/.local/bin/mutex`
+- Configuration and data: `~/.config/mutex`
 
 ## Windows
 

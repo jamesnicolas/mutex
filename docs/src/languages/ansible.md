@@ -16,7 +16,7 @@ Support for Ansible in Mutex is provided via a community-maintained [Ansible ext
 
 To avoid mishandling non-Ansible YAML files, the Ansible Language is not associated with any file extensions by default.
 
-To change this behavior, you can add a `"file_types"` section to Mutex settings inside your project (`.zed/settings.json`) or your Mutex user settings (`~/.config/zed/settings.json`) to match your folder/naming conventions. For example:
+To change this behavior, you can add a `"file_types"` section to Mutex settings inside your project (`.mutex/settings.json`) or your Mutex user settings (`~/.config/mutex/settings.json`) to match your folder/naming conventions. For example:
 
 ```json [settings]
 {

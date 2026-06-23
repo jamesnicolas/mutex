@@ -382,7 +382,7 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
 /// Marker passed as the first argument when this binary is re-executed as a
 /// sandbox launcher (see [`wrap_invocation`]). Intentionally unlikely to
 /// collide with a real argument.
-pub const SANDBOX_LAUNCHER_FLAG: &str = "--zed-linux-sandbox-exec";
+pub const SANDBOX_LAUNCHER_FLAG: &str = "--mutex-linux-sandbox-exec";
 
 /// A decoded launcher invocation: the raw sandbox policy plus the command to
 /// run. The launcher itself turns this into a `bwrap` command line.

@@ -49,6 +49,7 @@ trait InstalledApp {
 #[derive(Parser, Debug)]
 #[command(
     name = "mutex",
+    bin_name = "mutex",
     disable_version_flag = true,
     before_help = "The Mutex CLI binary.
 This CLI is a separate binary that invokes Mutex.

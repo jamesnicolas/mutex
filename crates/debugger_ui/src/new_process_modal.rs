@@ -1070,7 +1070,7 @@ impl DebugDelegate {
                     };
 
                     match path.components().next_back() {
-                        Some(".zed") => {
+                        Some(folder) if folder == paths::local_settings_folder_name() => {
                             path.push(RelPath::unix("debug.json").unwrap());
                         }
                         Some(".vscode") => {
@@ -1162,12 +1162,15 @@ impl DebugDelegate {
                 }
 
                 let dap_registry = cx.global::<DapRegistry>();
+                let local_settings_folder = RelPath::unix(paths::local_settings_folder_name()).ok();
                 let hide_vscode = scenarios.iter().any(|(kind, _)| match kind {
                     TaskSourceKind::Worktree {
                         id: _,
                         directory_in_worktree: dir,
                         id_base: _,
-                    } => dir.ends_with(RelPath::unix(".zed").unwrap()),
+                    } => local_settings_folder
+                        .as_ref()
+                        .is_some_and(|folder| dir.ends_with(folder)),
                     _ => false,
                 });
 

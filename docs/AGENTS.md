@@ -284,14 +284,14 @@ When documenting rules/instructions for AI, note that Mutex recognizes these fil
 
 ### Settings File Locations
 
-- macOS: `~/.config/zed/settings.json`
-- Linux: `~/.config/zed/settings.json`
+- macOS: `~/.config/mutex/settings.json`
+- Linux: `~/.config/mutex/settings.json`
 - Windows: `%AppData%\Mutex\settings.json`
 
 ### Keymap File Locations
 
-- macOS: `~/.config/zed/keymap.json`
-- Linux: `~/.config/zed/keymap.json`
+- macOS: `~/.config/mutex/keymap.json`
+- Linux: `~/.config/mutex/keymap.json`
 - Windows: `%AppData%\Mutex\keymap.json`
 
 ## Safety Constraints
