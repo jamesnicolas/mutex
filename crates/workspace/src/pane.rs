@@ -14,6 +14,7 @@ use crate::{
     toolbar::Toolbar,
     workspace_settings::{AutosaveSetting, FocusFollowsMouse, TabBarSettings, WorkspaceSettings},
 };
+use agent_settings::{AgentSettings, WindowLayout};
 use anyhow::Result;
 use collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -602,7 +603,10 @@ impl Pane {
             can_drop_predicate,
             can_split_predicate: None,
             can_toggle_zoom: true,
-            should_display_tab_bar: Rc::new(|_, cx| TabBarSettings::get_global(cx).show),
+            should_display_tab_bar: Rc::new(|_, cx| {
+                !matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_))
+                    && TabBarSettings::get_global(cx).show
+            }),
             should_display_welcome_page: false,
             render_tab_bar_buttons: Rc::new(default_render_tab_bar_buttons),
             render_tab_bar: Rc::new(Self::render_tab_bar),

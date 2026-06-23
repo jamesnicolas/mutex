@@ -664,7 +664,7 @@ fn resolve_agent_connection_stores(
             continue;
         }
 
-        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+        if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
             stores.push(panel.read(cx).connection_store().clone());
         }
     }

@@ -65,7 +65,9 @@ pub fn draft_has_user_content<'a>(
     let mut found_live_copy = false;
     for blocks in workspaces
         .into_iter()
-        .filter_map(|workspace| workspace.read(cx).panel::<AgentPanel>(cx))
+        .filter_map(|workspace| {
+            workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+        })
         .filter_map(|panel| {
             panel
                 .read(cx)
@@ -146,7 +148,7 @@ pub fn display_label_for_draft(
     cx: &App,
 ) -> Option<SharedString> {
     let in_memory = workspace
-        .and_then(|ws| ws.read(cx).panel::<AgentPanel>(cx))
+        .and_then(|ws| ws.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx)))
         .and_then(|panel| panel.read(cx).editor_text_if_in_memory(thread_id, cx));
     match in_memory {
         Some(Some(raw)) => return truncate_draft_label(&raw),

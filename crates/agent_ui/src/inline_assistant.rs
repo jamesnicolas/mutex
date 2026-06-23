@@ -223,7 +223,7 @@ impl InlineAssistant {
             model_registry.configuration_error(model_registry.inline_assistant_model(), cx)
         };
 
-        let Some(agent_panel) = workspace.panel::<AgentPanel>(cx) else {
+        let Some(agent_panel) = AgentPanel::for_workspace(workspace, cx) else {
             return;
         };
         let agent_panel = agent_panel.read(cx);

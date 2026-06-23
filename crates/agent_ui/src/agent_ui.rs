@@ -70,8 +70,8 @@ use workspace::Workspace;
 use crate::agent_configuration::{ConfigureContextServerModal, ManageProfilesModal};
 pub use crate::agent_connection_store::{ActiveAcpConnection, AgentConnectionStore};
 pub use crate::agent_panel::{
-    AgentPanel, AgentPanelEvent, AgentPanelTerminalInfo, MaxIdleRetainedThreads, TerminalId,
-    ThreadTitleRegenerationResult,
+    AgentCenterItem, AgentPanel, AgentPanelEvent, AgentPanelTerminalInfo, MaxIdleRetainedThreads,
+    TerminalId, ThreadTitleRegenerationResult,
 };
 use crate::agent_registry_ui::AgentRegistryPage;
 pub use crate::inline_assistant::InlineAssistant;
@@ -570,7 +570,7 @@ pub fn init(
         for workspace in workspaces {
             workspace
                 .update(cx, |workspace, cx| {
-                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                    if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                         panel.update(cx, |panel, cx| panel.refresh_skills(cx));
                     }
                 })

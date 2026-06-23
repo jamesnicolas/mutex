@@ -55,6 +55,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let has_preview = self.preview.is_some();
         let content = div()
             .when(self.is_modal, |this| this.elevation_3(cx))
+            .when(self.render_non_modal_surface, |this| this.elevation_2(cx))
             .when(has_preview, |this| this.overflow_hidden())
             .child(content);
 

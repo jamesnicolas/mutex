@@ -4072,6 +4072,10 @@ impl ThreadView {
         let has_messages = self.list_state.item_count() > 0;
         let fills_container = !has_messages || editor_expanded;
 
+        if !has_messages && !editor_expanded {
+            return self.render_empty_thread_composer(cx).into_any_element();
+        }
+
         h_flex()
             .p_2()
             .bg(editor_bg_color)
@@ -4138,37 +4142,87 @@ impl ThreadView {
                                 )
                             }),
                     )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .flex_none()
-                            .flex_wrap()
-                            .justify_between()
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .child(self.render_add_context_button(cx))
-                                    .child(self.render_follow_toggle(cx))
-                                    .children(self.render_fast_mode_control(cx))
-                                    .children(self.render_thinking_control(cx)),
-                            )
-                            .child(
-                                h_flex()
-                                    .flex_wrap()
-                                    .gap_1()
-                                    .children(self.render_token_usage(cx))
-                                    .children(self.profile_selector.clone())
-                                    .map(|this| match self.config_options_view.clone() {
-                                        Some(config_view) => this.child(config_view),
-                                        None => this
-                                            .children(self.mode_selector.clone())
-                                            .children(self.model_selector.clone()),
-                                    })
-                                    .child(self.render_send_button(cx)),
-                            ),
-                    ),
+                    .child(self.render_message_editor_controls(cx)),
             )
             .into_any()
+    }
+
+    fn render_empty_thread_composer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let project_name = self.empty_thread_project_name(cx);
+        let max_content_width = AgentSettings::get_global(cx).max_content_width;
+        let composer_width = max_content_width.unwrap_or_else(|| px(864.));
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_6()
+            .px_6()
+            .pb_16()
+            .bg(cx.theme().colors().editor_background)
+            .child(
+                Label::new(format!("What should we build in {project_name}?"))
+                    .size(LabelSize::Custom(rems(1.75)))
+                    .color(Color::Default),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(composer_width)
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().colors().border_variant)
+                    .bg(cx.theme().colors().panel_background)
+                    .p_3()
+                    .gap_3()
+                    .child(self.message_editor.clone())
+                    .child(self.render_message_editor_controls(cx)),
+            )
+    }
+
+    fn render_message_editor_controls(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .flex_none()
+            .flex_wrap()
+            .justify_between()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_0p5()
+                    .child(self.render_add_context_button(cx))
+                    .child(self.render_follow_toggle(cx))
+                    .children(self.render_fast_mode_control(cx))
+                    .children(self.render_thinking_control(cx)),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(self.render_token_usage(cx))
+                    .children(self.profile_selector.clone())
+                    .map(|this| match self.config_options_view.clone() {
+                        Some(config_view) => this.child(config_view),
+                        None => this
+                            .children(self.mode_selector.clone())
+                            .children(self.model_selector.clone()),
+                    })
+                    .child(self.render_send_button(cx)),
+            )
+    }
+
+    fn empty_thread_project_name(&self, cx: &App) -> SharedString {
+        self.project
+            .upgrade()
+            .and_then(|project| {
+                project
+                    .read(cx)
+                    .visible_worktrees(cx)
+                    .next()
+                    .map(|worktree| worktree.read(cx).root_name_str().to_string())
+            })
+            .unwrap_or_else(|| "this project".to_string())
+            .into()
     }
 
     fn render_message_queue_entries(
@@ -11362,7 +11416,7 @@ pub(crate) fn open_link(
             }
             MentionUri::Selection { abs_path: None, .. } => {}
             MentionUri::Thread { id, name } => {
-                if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                     panel.update(cx, |panel, cx| {
                         panel.open_thread(id, None, Some(name.into()), window, cx)
                     });

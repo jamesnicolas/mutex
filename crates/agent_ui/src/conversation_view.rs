@@ -2627,8 +2627,7 @@ impl ConversationView {
     fn is_visible_in_agent_panel(&self, workspace: &Entity<Workspace>, cx: &Context<Self>) -> bool {
         AgentPanel::is_visible(workspace, cx)
             && workspace
-                .read(cx)
-                .panel::<AgentPanel>(cx)
+                .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
                 .is_some_and(|panel| {
                     panel
                         .read(cx)
@@ -2800,9 +2799,11 @@ impl ConversationView {
                                                 cx,
                                             );
                                             workspace.update(cx, |workspace, cx| {
-                                                workspace.reveal_panel::<AgentPanel>(window, cx);
+                                                AgentPanel::reveal_for_workspace(
+                                                    workspace, window, cx,
+                                                );
                                                 if let Some(panel) =
-                                                    workspace.panel::<AgentPanel>(cx)
+                                                    AgentPanel::for_workspace(workspace, cx)
                                                 {
                                                     panel.update(cx, |panel, cx| {
                                                         panel.load_agent_thread(
@@ -2817,7 +2818,9 @@ impl ConversationView {
                                                         );
                                                     });
                                                 }
-                                                workspace.focus_panel::<AgentPanel>(window, cx);
+                                                AgentPanel::focus_for_workspace(
+                                                    workspace, window, cx,
+                                                );
                                             });
                                         }
                                     })
@@ -2872,11 +2875,9 @@ impl ConversationView {
                 ));
             }
 
-            if let Some(panel) = self
-                .workspace
-                .upgrade()
-                .and_then(|workspace| workspace.read(cx).panel::<AgentPanel>(cx))
-            {
+            if let Some(panel) = self.workspace.upgrade().and_then(|workspace| {
+                workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+            }) {
                 subscriptions.push(cx.subscribe_in(
                     &panel,
                     window,

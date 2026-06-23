@@ -106,6 +106,7 @@ pub struct Picker<D: PickerDelegate> {
     ///
     /// Set this to `false` when rendering the `Picker` as part of a larger modal.
     is_modal: bool,
+    render_non_modal_surface: bool,
     /// Bounds tracking for the picker container (for aside positioning)
     picker_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Bounds tracking for items (for aside positioning) - maps item index to bounds
@@ -494,6 +495,7 @@ impl<D: PickerDelegate> Picker<D> {
             item_bounds: Rc::new(RefCell::new(HashMap::default())),
             size_bounds: shape::SizeBounds::default(),
             actions_menu_handle: PopoverMenuHandle::default(),
+            render_non_modal_surface: false,
         };
         this.update_matches("".to_string(), window, cx);
         // give the delegate 4ms to render the first set of suggestions.

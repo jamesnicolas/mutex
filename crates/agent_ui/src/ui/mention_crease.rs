@@ -401,7 +401,7 @@ fn open_thread(
 ) {
     use crate::{Agent, AgentPanel, AgentThreadSource, thread_metadata_store::ThreadMetadataStore};
 
-    let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
+    let Some(panel) = AgentPanel::for_workspace(workspace, cx) else {
         return;
     };
 

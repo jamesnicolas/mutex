@@ -36,6 +36,7 @@ pub fn acp_model_selector(
     Picker::list(delegate, window, cx)
         .show_scrollbar(true)
         .minimum_results_width(rems(20.))
+        .initial_width(rems(20.))
         .height(rems(20.))
         .no_vertical_padding()
 }
@@ -194,7 +195,7 @@ impl PickerDelegate for ModelPickerDelegate {
     type ListItem = AnyElement;
 
     fn name() -> &'static str {
-        "model selector"
+        "acp model selector"
     }
 
     fn match_count(&self) -> usize {

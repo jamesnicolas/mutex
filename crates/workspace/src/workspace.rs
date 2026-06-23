@@ -43,6 +43,7 @@ pub use remote::{
 };
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
 
+use agent_settings::{AgentSettings, WindowLayout};
 use anyhow::{Context as _, Result, anyhow};
 use client::{
     ChannelId, Client, ErrorExt, ParticipantIndex, Status, TypedEnvelope, User, UserStore,
@@ -7248,6 +7249,7 @@ impl Workspace {
     pub(crate) fn load_workspace(
         serialized_workspace: SerializedWorkspace,
         paths_to_open: Vec<Option<ProjectPath>>,
+        restore_center_items: bool,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Task<Result<Vec<Option<Box<dyn ItemHandle>>>>> {
@@ -7258,10 +7260,11 @@ impl Workspace {
             let mut center_items = None;
 
             // Traverse the splits tree and add to things
-            if let Some((group, active_pane, items)) = serialized_workspace
-                .center_group
-                .deserialize(&project, serialized_workspace.id, workspace.clone(), cx)
-                .await
+            if restore_center_items
+                && let Some((group, active_pane, items)) = serialized_workspace
+                    .center_group
+                    .deserialize(&project, serialized_workspace.id, workspace.clone(), cx)
+                    .await
             {
                 center_items = Some(items);
                 center_group = Some((group, active_pane))
@@ -7286,13 +7289,17 @@ impl Workspace {
                 }
             })?;
 
-            let opened_items = paths_to_open
-                .into_iter()
-                .map(|path_to_open| {
-                    path_to_open
-                        .and_then(|path_to_open| items_by_project_path.remove(&path_to_open))
-                })
-                .collect::<Vec<_>>();
+            let opened_items = if restore_center_items {
+                paths_to_open
+                    .into_iter()
+                    .map(|path_to_open| {
+                        path_to_open
+                            .and_then(|path_to_open| items_by_project_path.remove(&path_to_open))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![None; paths_to_open.len()]
+            };
 
             // Remove old panes from workspace panes list
             workspace.update_in(cx, |workspace, window, cx| {
@@ -8396,6 +8403,7 @@ fn open_items(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> impl 'static + Future<Output = Result<Vec<Option<Result<Box<dyn ItemHandle>>>>>> + use<> {
+    let restore_center_items = !matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_));
     let restored_items = serialized_workspace.map(|serialized_workspace| {
         Workspace::load_workspace(
             serialized_workspace,
@@ -8404,6 +8412,7 @@ fn open_items(
                 .map(|(_, project_path)| project_path)
                 .cloned()
                 .collect(),
+            restore_center_items,
             window,
             cx,
         )

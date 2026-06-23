@@ -36,7 +36,10 @@ where
         anchor: Anchor,
         cx: &mut App,
     ) -> Self {
-        picker.update(cx, |picker, _| picker.is_modal = false);
+        picker.update(cx, |picker, _| {
+            picker.is_modal = false;
+            picker.render_non_modal_surface = true;
+        });
         Self {
             _subscriptions: vec![cx.subscribe(&picker, |picker, &DismissEvent, cx| {
                 picker.update(cx, |_, cx| cx.emit(DismissEvent));

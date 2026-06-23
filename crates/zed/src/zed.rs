@@ -15,7 +15,7 @@ pub mod visual_tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
 
-use agent_settings::{UserAgentsMdState, init_user_agents_md};
+use agent_settings::{AgentSettings, UserAgentsMdState, WindowLayout, init_user_agents_md};
 use agent_ui::AgentDiffToolbar;
 use anyhow::Context as _;
 pub use app_menus::*;
@@ -483,7 +483,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 let source_workspace = source_workspace.clone();
                 active_workspace.update(cx, |workspace, cx| {
                     if let Some(ref source) = source_workspace {
-                        if let Some(panel) = workspace.panel::<agent_ui::AgentPanel>(cx) {
+                        if let Some(panel) = agent_ui::AgentPanel::for_workspace(workspace, cx) {
                             panel.update(cx, |panel, cx| {
                                 panel.initialize_from_source_workspace_if_needed(
                                     source.clone(),
@@ -772,8 +772,16 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
-            initialize_agent_panel(workspace_handle, cx.clone()).map(|r| r.log_err()),
+            initialize_agent_panel(workspace_handle.clone(), cx.clone()).map(|r| r.log_err()),
         );
+
+        workspace_handle
+            .update_in(cx, |workspace, window, cx| {
+                if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_)) {
+                    mount_agent_panel_as_center_item(workspace, window, cx);
+                }
+            })
+            .log_err();
 
         anyhow::Ok(())
     })
@@ -821,6 +829,34 @@ fn ensure_agent_panel_for_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<anyhow::Result<()>> {
+    let disable_ai = SettingsStore::global(cx)
+        .get::<DisableAiSettings>(None)
+        .disable_ai
+        || cfg!(test);
+
+    if disable_ai {
+        remove_agent_panel_from_workspace(workspace, window, cx);
+        return Task::ready(Ok(()));
+    }
+
+    if agent_ui::AgentPanel::for_workspace(workspace, cx).is_some() {
+        if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_)) {
+            mount_agent_panel_as_center_item(workspace, window, cx);
+        } else {
+            mount_agent_panel_as_dock_panel(workspace, window, cx);
+        }
+
+        if let Some(source_workspace) = source_workspace
+            && let Some(panel) = agent_ui::AgentPanel::for_workspace(workspace, cx)
+        {
+            panel.update(cx, |panel, cx| {
+                panel.initialize_from_source_workspace_if_needed(source_workspace, window, cx);
+            });
+        }
+
+        return Task::ready(Ok(()));
+    }
+
     let task = setup_or_teardown_ai_panel(workspace, window, cx, move |workspace, cx| {
         agent_ui::AgentPanel::load(workspace, cx)
     });
@@ -828,8 +864,14 @@ fn ensure_agent_panel_for_workspace(
     cx.spawn_in(window, async move |workspace, cx| {
         task.await?;
         workspace.update_in(cx, |workspace, window, cx| {
+            if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_)) {
+                mount_agent_panel_as_center_item(workspace, window, cx);
+            } else {
+                mount_agent_panel_as_dock_panel(workspace, window, cx);
+            }
+
             if let Some(source_workspace) = source_workspace.clone()
-                && let Some(panel) = workspace.panel::<agent_ui::AgentPanel>(cx)
+                && let Some(panel) = agent_ui::AgentPanel::for_workspace(workspace, cx)
             {
                 panel.update(cx, |panel, cx| {
                     panel.initialize_from_source_workspace_if_needed(source_workspace, window, cx);
@@ -837,6 +879,81 @@ fn ensure_agent_panel_for_workspace(
             }
         })
     })
+}
+
+fn remove_agent_panel_from_workspace(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(dock_panel) = workspace.panel::<agent_ui::AgentPanel>(cx) {
+        workspace.remove_panel::<agent_ui::AgentPanel>(&dock_panel, window, cx);
+    }
+
+    if let Some(item) = workspace.item_of_type::<agent_ui::AgentCenterItem>(cx) {
+        remove_agent_center_item(workspace, &item, window, cx);
+    }
+}
+
+fn remove_agent_center_item(
+    workspace: &mut Workspace,
+    item: &Entity<agent_ui::AgentCenterItem>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Entity<agent_ui::AgentPanel> {
+    let panel = item.read(cx).panel();
+    if let Some(pane) = workspace.pane_for_item_id(item.entity_id()) {
+        let item_id = item.entity_id();
+        pane.update(cx, |pane, cx| {
+            pane.remove_item(item_id, false, false, window, cx);
+        });
+    }
+    panel
+}
+
+fn mount_agent_panel_as_center_item(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    workspace.close_panel::<ProjectPanel>(window, cx);
+
+    let panel = agent_ui::AgentPanel::for_workspace(workspace, cx);
+
+    if let Some(dock_panel) = workspace.panel::<agent_ui::AgentPanel>(cx) {
+        workspace.remove_panel::<agent_ui::AgentPanel>(&dock_panel, window, cx);
+    }
+
+    if let Some(panel) = &panel {
+        panel.update(cx, |panel, cx| {
+            panel.ensure_thread_initialized(window, cx);
+        });
+    }
+
+    if workspace
+        .item_of_type::<agent_ui::AgentCenterItem>(cx)
+        .is_none()
+        && let Some(panel) = panel
+    {
+        let item = cx.new(|_| agent_ui::AgentCenterItem::new(panel));
+        workspace.add_item_to_active_pane(Box::new(item), None, true, window, cx);
+    }
+}
+
+fn mount_agent_panel_as_dock_panel(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let center_panel = workspace
+        .item_of_type::<agent_ui::AgentCenterItem>(cx)
+        .map(|item| remove_agent_center_item(workspace, &item, window, cx));
+
+    if workspace.panel::<agent_ui::AgentPanel>(cx).is_none()
+        && let Some(panel) = center_panel
+    {
+        workspace.add_panel(panel, window, cx);
+    }
 }
 
 async fn initialize_agent_panel(
@@ -1267,7 +1384,17 @@ fn register_actions(
         })
         .register_action({
             let app_state = app_state.clone();
-            move |_, _: &NewFile, _, cx| {
+            move |workspace, _: &NewFile, window, cx| {
+                if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_))
+                    && let Some(panel) = agent_ui::AgentPanel::for_workspace(workspace, cx)
+                {
+                    panel.update(cx, |panel, cx| {
+                        panel.new_thread(&agent_ui::NewThread, window, cx);
+                    });
+                    agent_ui::AgentPanel::focus_for_workspace(workspace, window, cx);
+                    return;
+                }
+
                 open_new(
                     Default::default(),
                     app_state.clone(),
@@ -2751,6 +2878,93 @@ mod tests {
                     multi_workspace.sidebar_open(),
                     "agent layout should show threads in the sidebar"
                 );
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    assert!(
+                        workspace.panel::<ProjectPanel>(cx).is_some(),
+                        "the project panel should remain available"
+                    );
+                    assert!(
+                        !workspace.right_dock().read(cx).is_open(),
+                        "agent layout should not show the file tree by default"
+                    );
+                    assert!(
+                        workspace.active_item(cx).is_none(),
+                        "agent layout should not show an editor by default"
+                    );
+                });
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    async fn test_agent_layout_does_not_restore_editor_tabs(cx: &mut TestAppContext) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(
+                path!("/root"),
+                json!({
+                    "file.txt": "hello",
+                }),
+            )
+            .await;
+
+        let opened_file = cx
+            .update(|cx| {
+                open_paths(
+                    &[PathBuf::from(path!("/root/file.txt"))],
+                    app_state.clone(),
+                    OpenOptions::default(),
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        let window = opened_file.window;
+        window
+            .update(cx, |multi_workspace, _window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    assert!(
+                        workspace.active_item_as::<Editor>(cx).is_some(),
+                        "explicit file opens should still work in agent layout"
+                    );
+                });
+            })
+            .unwrap();
+
+        flush_workspace_serialization(&window, cx).await;
+        window
+            .update(cx, |_multi_workspace, window, _cx| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+
+        let reopened_project = cx
+            .update(|cx| {
+                open_paths(
+                    &[PathBuf::from(path!("/root"))],
+                    app_state.clone(),
+                    OpenOptions::default(),
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+
+        reopened_project
+            .window
+            .update(cx, |multi_workspace, _window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    assert!(
+                        workspace.active_item(cx).is_none(),
+                        "agent layout should not restore editor tabs by default"
+                    );
+                    assert!(
+                        !workspace.right_dock().read(cx).is_open(),
+                        "agent layout should not restore the file tree by default"
+                    );
+                });
             })
             .unwrap();
     }
@@ -2876,7 +3090,10 @@ mod tests {
             .update(cx, |multi_workspace, window, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
                     assert_eq!(workspace.worktrees(cx).count(), 2);
-                    assert!(workspace.right_dock().read(cx).is_open());
+                    assert!(
+                        !workspace.right_dock().read(cx).is_open(),
+                        "agent layout should not show the file tree by default"
+                    );
                     assert!(
                         workspace
                             .active_pane()

@@ -1033,7 +1033,9 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
 
                     multi_workspace.update(cx, |multi_workspace, window, cx| {
                         multi_workspace.workspace().update(cx, |workspace, cx| {
-                            if let Some(panel) = workspace.focus_panel::<AgentPanel>(window, cx) {
+                            if let Some(panel) =
+                                AgentPanel::focus_for_workspace(workspace, window, cx)
+                            {
                                 panel.update(cx, |panel, cx| {
                                     panel.new_agent_thread_with_external_source_prompt(
                                         external_source_prompt,
@@ -1064,7 +1066,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                     let import_state = multi_workspace.update(cx, |_, window, cx| {
                         workspace.update(cx, |workspace, cx| {
                             if workspace.root_paths(cx).is_empty() {
-                                workspace.focus_panel::<AgentPanel>(window, cx);
+                                AgentPanel::focus_for_workspace(workspace, window, cx);
 
                                 struct OpenProjectForSharedThreadToast;
                                 workspace.show_toast(
@@ -1080,9 +1082,9 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                             }
 
                             let client = workspace.project().read(cx).client();
-                            let thread_store: Option<gpui::Entity<ThreadStore>> = workspace
-                                .panel::<AgentPanel>(cx)
-                                .map(|panel| panel.read(cx).thread_store().clone());
+                            let thread_store: Option<gpui::Entity<ThreadStore>> =
+                                AgentPanel::for_workspace(workspace, cx)
+                                    .map(|panel| panel.read(cx).thread_store().clone());
                             anyhow::Ok(Some((client, thread_store)))
                         })
                     })??;
@@ -1123,7 +1125,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
 
                     multi_workspace.update(cx, |_, window, cx| {
                         workspace.update(cx, |workspace, cx| {
-                            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                                 panel.update(cx, |panel, cx| {
                                     panel.open_thread(
                                         session_id,

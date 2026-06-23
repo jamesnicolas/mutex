@@ -30,8 +30,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _cx: &mut Context<Workspace>| {
             workspace.register_action(|workspace, _: &OpenAcpLogs, window, cx| {
-                let connection_store = workspace
-                    .panel::<AgentPanel>(cx)
+                let connection_store = AgentPanel::for_workspace(workspace, cx)
                     .map(|panel| panel.read(cx).connection_store().clone());
                 let acp_tools = Box::new(cx.new(|cx| {
                     AcpTools::new(
@@ -119,8 +118,7 @@ impl AcpTools {
     fn update_connection_store(&mut self, cx: &mut Context<Self>) {
         let connection_store = self.workspace.upgrade().and_then(|workspace| {
             workspace
-                .read(cx)
-                .panel::<AgentPanel>(cx)
+                .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
                 .map(|panel| panel.read(cx).connection_store().clone())
         });
         self.set_connection_store(connection_store, cx);
@@ -236,7 +234,7 @@ impl AcpTools {
         };
 
         workspace.update(cx, |workspace, cx| {
-            let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
+            let Some(panel) = AgentPanel::for_workspace(workspace, cx) else {
                 return;
             };
 

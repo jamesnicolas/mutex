@@ -1054,7 +1054,9 @@ impl Sidebar {
 
         self.observe_docks(workspace, cx);
 
-        if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+        if let Some(agent_panel) =
+            workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+        {
             self.subscribe_to_agent_panel(workspace, &agent_panel, window, cx);
         }
     }
@@ -1155,9 +1157,9 @@ impl Sidebar {
     }
 
     fn sync_active_entry_from_active_workspace(&mut self, cx: &App) {
-        let panel = self
-            .active_workspace(cx)
-            .and_then(|ws| ws.read(cx).panel::<AgentPanel>(cx));
+        let panel = self.active_workspace(cx).and_then(|ws| {
+            ws.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+        });
         if let Some(panel) = panel {
             self.sync_active_entry_from_panel(&panel, cx);
         }
@@ -1171,7 +1173,9 @@ impl Sidebar {
         let Some(workspace) = self.active_workspace(cx) else {
             return;
         };
-        let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) else {
+        let Some(panel) =
+            workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+        else {
             return;
         };
         let Some(thread_id) = panel.read(cx).active_thread_id(cx) else {
@@ -1199,8 +1203,7 @@ impl Sidebar {
 
         // Only sync when the event comes from the active workspace's panel.
         let is_active_panel = active_workspace
-            .read(cx)
-            .panel::<AgentPanel>(cx)
+            .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
             .is_some_and(|p| p == *agent_panel);
         if !is_active_panel {
             return false;
@@ -1424,7 +1427,9 @@ impl Sidebar {
         let groups = mw.project_groups(cx);
         let mut live_notified_terminal_ids: HashSet<TerminalId> = HashSet::new();
         for workspace in &workspaces {
-            if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+            if let Some(agent_panel) =
+                workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+            {
                 live_notified_terminal_ids.extend(
                     agent_panel
                         .read(cx)
@@ -1723,7 +1728,9 @@ impl Sidebar {
                 let pending_activation = self.pending_thread_activation;
                 let active_panel_thread_id = active_workspace
                     .as_ref()
-                    .and_then(|ws| ws.read(cx).panel::<AgentPanel>(cx))
+                    .and_then(|ws| {
+                        ws.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+                    })
                     .and_then(|panel| panel.read(cx).active_thread_id(cx));
                 threads.retain(|thread| {
                     if thread.draft != Some(DraftKind::Empty) {
@@ -2153,7 +2160,9 @@ impl Sidebar {
         let draft_conversation_views: Vec<Entity<agent_ui::ConversationView>> = multi_workspace
             .read(cx)
             .workspaces()
-            .filter_map(|ws| ws.read(cx).panel::<AgentPanel>(cx))
+            .filter_map(|ws| {
+                ws.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+            })
             .flat_map(|panel| panel.read(cx).conversation_views())
             .collect();
 
@@ -3443,7 +3452,9 @@ impl Sidebar {
         if let Some(multi_workspace) = self.multi_workspace.upgrade() {
             let workspaces: Vec<_> = multi_workspace.read(cx).workspaces().cloned().collect();
             for workspace in workspaces {
-                if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+                if let Some(agent_panel) = workspace
+                    .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+                {
                     if let Some(view) = agent_panel
                         .read(cx)
                         .conversation_view_for_id(&thread_id, cx)
@@ -3654,7 +3665,7 @@ impl Sidebar {
 
         let mut existing_panel = None;
         workspace.update(cx, |workspace, cx| {
-            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+            if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                 existing_panel = Some(panel);
             }
         });
@@ -3663,9 +3674,9 @@ impl Sidebar {
             load_thread(agent_panel, metadata, focus, window, cx);
             workspace.update(cx, |workspace, cx| {
                 if focus {
-                    workspace.focus_panel::<AgentPanel>(window, cx);
+                    AgentPanel::focus_for_workspace(workspace, window, cx);
                 } else {
-                    workspace.reveal_panel::<AgentPanel>(window, cx);
+                    AgentPanel::reveal_for_workspace(workspace, window, cx);
                 }
             });
             return;
@@ -3678,15 +3689,15 @@ impl Sidebar {
             let panel = AgentPanel::load(workspace.clone(), async_window_cx.clone()).await?;
 
             workspace.update_in(&mut async_window_cx, |workspace, window, cx| {
-                let panel = workspace.panel::<AgentPanel>(cx).unwrap_or_else(|| {
+                let panel = AgentPanel::for_workspace(workspace, cx).unwrap_or_else(|| {
                     workspace.add_panel(panel.clone(), window, cx);
                     panel.clone()
                 });
                 load_thread(panel, &metadata, focus, window, cx);
                 if focus {
-                    workspace.focus_panel::<AgentPanel>(window, cx);
+                    AgentPanel::focus_for_workspace(workspace, window, cx);
                 } else {
-                    workspace.reveal_panel::<AgentPanel>(window, cx);
+                    AgentPanel::reveal_for_workspace(workspace, window, cx);
                 }
             })?;
 
@@ -3767,7 +3778,7 @@ impl Sidebar {
     ) {
         if let Some(panel) = thread_workspace
             .as_ref()
-            .and_then(|w| w.read(cx).panel::<AgentPanel>(cx))
+            .and_then(|w| w.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx)))
         {
             match panel.update(cx, |panel, cx| panel.regenerate_thread_title(thread_id, cx)) {
                 ThreadTitleRegenerationResult::Started
@@ -3886,7 +3897,7 @@ impl Sidebar {
 
         if self.is_thread_active_in_workspace(&metadata.thread_id, workspace, cx) {
             workspace.update(cx, |workspace, cx| {
-                workspace.focus_panel::<AgentPanel>(window, cx);
+                AgentPanel::focus_for_workspace(workspace, window, cx);
             });
             return;
         }
@@ -4405,7 +4416,9 @@ impl Sidebar {
 
         let workspaces: Vec<_> = multi_workspace.read(cx).workspaces().cloned().collect();
         for workspace in workspaces {
-            if let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+            if let Some(agent_panel) =
+                workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+            {
                 let cancelled =
                     agent_panel.update(cx, |panel, cx| panel.cancel_thread(thread_id, cx));
                 if cancelled {
@@ -4527,7 +4540,7 @@ impl Sidebar {
 
         let mut existing_panel = None;
         workspace.update(cx, |workspace, cx| {
-            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+            if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                 existing_panel = Some(panel);
             }
         });
@@ -4536,9 +4549,9 @@ impl Sidebar {
             restore_terminal(agent_panel, metadata, focus, None, window, cx);
             workspace.update(cx, |workspace, cx| {
                 if focus {
-                    workspace.focus_panel::<AgentPanel>(window, cx);
+                    AgentPanel::focus_for_workspace(workspace, window, cx);
                 } else {
-                    workspace.reveal_panel::<AgentPanel>(window, cx);
+                    AgentPanel::reveal_for_workspace(workspace, window, cx);
                 }
             });
             return;
@@ -4551,15 +4564,15 @@ impl Sidebar {
             let panel = AgentPanel::load(workspace.clone(), async_window_cx.clone()).await?;
 
             workspace.update_in(&mut async_window_cx, |workspace, window, cx| {
-                let panel = workspace.panel::<AgentPanel>(cx).unwrap_or_else(|| {
+                let panel = AgentPanel::for_workspace(workspace, cx).unwrap_or_else(|| {
                     workspace.add_panel(panel.clone(), window, cx);
                     panel.clone()
                 });
                 restore_terminal(panel, &metadata, focus, Some(workspace), window, cx);
                 if focus {
-                    workspace.focus_panel::<AgentPanel>(window, cx);
+                    AgentPanel::focus_for_workspace(workspace, window, cx);
                 } else {
-                    workspace.reveal_panel::<AgentPanel>(window, cx);
+                    AgentPanel::reveal_for_workspace(workspace, window, cx);
                 }
             })?;
 
@@ -5214,7 +5227,7 @@ impl Sidebar {
         // workspace may not be the active workspace.
         if let ThreadEntryWorkspace::Open(workspace) = workspace {
             workspace.update(cx, |workspace, cx| {
-                if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                     panel.update(cx, |panel, cx| {
                         if activate_panel_draft {
                             panel.close_terminal(terminal_id, window, cx);
@@ -5636,7 +5649,9 @@ impl Sidebar {
                     mw.read(cx)
                         .workspace_for_paths(folder_paths, thread_remote_connection, cx)
                 }) {
-                    if let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+                    if let Some(panel) = workspace
+                        .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+                    {
                         let panel_shows_archived = panel
                             .read(cx)
                             .active_conversation_view()
@@ -5667,7 +5682,9 @@ impl Sidebar {
                     .workspace_for_paths(folder_paths, thread_remote_connection, cx)
             });
             if let Some(workspace) = workspace {
-                if let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+                if let Some(panel) = workspace
+                    .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+                {
                     panel.update(cx, |panel, cx| {
                         panel.clear_base_view(window, cx);
                     });
@@ -6221,7 +6238,7 @@ impl Sidebar {
                             });
                             this.update_entries(cx);
                             workspace.update(cx, |workspace, cx| {
-                                if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                                if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                                     panel.update(cx, |panel, cx| {
                                         panel.activate_terminal(terminal_id, false, window, cx);
                                     });
@@ -6584,7 +6601,9 @@ impl Sidebar {
                                 move |window, cx| {
                                     if let Some(thread_workspace) = thread_workspace.as_ref()
                                         && let Some(panel) =
-                                            thread_workspace.read(cx).panel::<AgentPanel>(cx)
+                                            thread_workspace.read_with(cx, |workspace, cx| {
+                                                AgentPanel::for_workspace(workspace, cx)
+                                            })
                                     {
                                         let opened = panel.update(cx, |panel, cx| {
                                             panel.open_thread_as_markdown(
@@ -7084,7 +7103,7 @@ impl Sidebar {
 
         let removed_from_panel = if let ThreadEntryWorkspace::Open(workspace) = workspace {
             workspace.update(cx, |workspace, cx| {
-                if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                     panel.update(cx, |panel, cx| {
                         if activate_panel_draft {
                             panel.remove_thread(draft_id, window, cx);
@@ -7148,8 +7167,7 @@ impl Sidebar {
         cx: &App,
     ) -> bool {
         workspace
-            .read(cx)
-            .panel::<AgentPanel>(cx)
+            .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
             .is_some_and(|panel| panel.read(cx).should_create_terminal_for_new_entry(cx))
     }
 
@@ -7172,12 +7190,12 @@ impl Sidebar {
         });
 
         let draft_id = workspace.update(cx, |workspace, cx| {
-            let panel = workspace.panel::<AgentPanel>(cx)?;
+            let panel = AgentPanel::for_workspace(workspace, cx)?;
             let draft_id = panel.update(cx, |panel, cx| {
                 panel.activate_new_thread(true, AgentThreadSource::Sidebar, window, cx);
                 panel.active_thread_id(cx)
             });
-            workspace.focus_panel::<AgentPanel>(window, cx);
+            AgentPanel::focus_for_workspace(workspace, window, cx);
             draft_id
         });
 
@@ -7209,12 +7227,12 @@ impl Sidebar {
         });
 
         workspace.update(cx, |workspace, cx| {
-            if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+            if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
                 panel.update(cx, |panel, cx| {
                     panel.new_terminal(Some(workspace), AgentThreadSource::Sidebar, window, cx);
                 });
             }
-            workspace.focus_panel::<AgentPanel>(window, cx);
+            AgentPanel::focus_for_workspace(workspace, window, cx);
         });
     }
 
@@ -7822,7 +7840,9 @@ impl Sidebar {
         else {
             return;
         };
-        let Some(agent_panel) = active_workspace.read(cx).panel::<AgentPanel>(cx) else {
+        let Some(agent_panel) = active_workspace
+            .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+        else {
             return;
         };
 
@@ -8140,7 +8160,9 @@ fn all_thread_infos_for_workspace(
     workspace: &Entity<Workspace>,
     cx: &App,
 ) -> impl Iterator<Item = ActiveThreadInfo> {
-    let Some(agent_panel) = workspace.read(cx).panel::<AgentPanel>(cx) else {
+    let Some(agent_panel) =
+        workspace.read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+    else {
         return None.into_iter().flatten();
     };
     let agent_panel = agent_panel.read(cx);
@@ -8364,7 +8386,7 @@ fn dump_single_workspace(workspace: &Workspace, output: &mut String, cx: &gpui::
         writeln!(output).ok();
     }
 
-    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+    if let Some(panel) = AgentPanel::for_workspace(workspace, cx) {
         let panel = panel.read(cx);
 
         let panel_workspace_id = panel.workspace_id();

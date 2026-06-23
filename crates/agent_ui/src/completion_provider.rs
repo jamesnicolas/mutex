@@ -81,7 +81,7 @@ impl AgentContextSource {
     }
 
     pub(crate) fn from_focused(workspace: &Workspace, window: &Window, cx: &App) -> Option<Self> {
-        if let Some(agent_panel) = workspace.panel::<AgentPanel>(cx)
+        if let Some(agent_panel) = AgentPanel::for_workspace(workspace, cx)
             && agent_panel.focus_handle(cx).contains_focused(window, cx)
         {
             return None;
@@ -1217,7 +1217,7 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
         let project = workspace.project().read(cx);
         let include_root_name = workspace.visible_worktrees(cx).count() > 1;
 
-        if let Some(agent_panel) = workspace.panel::<AgentPanel>(cx)
+        if let Some(agent_panel) = AgentPanel::for_workspace(workspace, cx)
             && let Some(thread) = agent_panel.read(cx).active_agent_thread(cx)
             && let Some(title) = thread.read(cx).title()
         {
