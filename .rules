@@ -1,3 +1,9 @@
+# Project orientation
+
+Mutex is a fork of Zed focused on an AI-first agentic use model. Treat remaining
+Zed names in crate paths, scripts, and bundle internals as implementation
+inheritance, not proof that an installed `Zed.app` is the Mutex product.
+
 # Rust coding guidelines
 
 * Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
