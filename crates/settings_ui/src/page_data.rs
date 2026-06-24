@@ -7914,10 +7914,10 @@ fn ai_page(cx: &App) -> SettingsPage {
                 render: render_sandbox_settings_page,
             }),
             SettingsPageItem::SubPageLink(SubPageLink {
-                title: "Tool Permissions".into(),
+                title: "Action Approval".into(),
                 r#type: Default::default(),
                 json_path: Some("agent.tool_permissions"),
-                description: Some("Set up regex patterns to auto-allow, auto-deny, or always request confirmation, for specific tool inputs.".into()),
+                description: Some("Choose an approval mode for agent actions or configure custom tool and sandbox permissions.".into()),
                 in_json: true,
                 files: USER,
                 render: render_tool_permissions_setup_page,

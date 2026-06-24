@@ -12,11 +12,13 @@ use ui::{Banner, ContextMenu, Divider, PopoverMenu, Severity, Tooltip, prelude::
 use util::ResultExt as _;
 use util::shell::ShellKind;
 
+use super::sandbox_settings::render_sandbox_settings_page;
 use crate::{SettingsWindow, components::SettingsInputField};
 
 const HARDCODED_RULES_DESCRIPTION: &str =
     "`rm -rf` commands are always blocked when run on `$HOME`, `~`, `.`, `..`, or `/`";
 const SETTINGS_DISCLAIMER: &str = "Note: custom tool permissions only apply to the Mutex native agent and don’t extend to external agents connected through the Agent Client Protocol (ACP).";
+const ACTION_APPROVAL_DESCRIPTION: &str = "Choose how Mutex approves agent tool actions. Custom settings are still available for detailed tool rules and sandbox grants.";
 
 /// Tools that support permission rules
 const TOOLS: &[ToolInfo] = &[
@@ -89,6 +91,61 @@ pub(crate) struct ToolInfo {
     regex_explanation: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionApprovalMode {
+    Ask,
+    Approve,
+    FullAccess,
+    Custom,
+}
+
+impl ActionApprovalMode {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Approve => "approve",
+            Self::FullAccess => "full-access",
+            Self::Custom => "custom",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask for approval",
+            Self::Approve => "Approve for me",
+            Self::FullAccess => "Full access",
+            Self::Custom => "Custom (settings.json)",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask before tool actions, network access, and sandbox escapes.",
+            Self::Approve => "Only ask for actions detected as potentially unsafe.",
+            Self::FullAccess => {
+                "Unrestricted access to the internet and any file on your computer."
+            }
+            Self::Custom => "Uses permissions defined in settings.json.",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::Ask => IconName::LockOutlined,
+            Self::Approve => IconName::UserCheck,
+            Self::FullAccess => IconName::Public,
+            Self::Custom => IconName::Settings,
+        }
+    }
+}
+
+const ACTION_APPROVAL_MODES: &[ActionApprovalMode] = &[
+    ActionApprovalMode::Ask,
+    ActionApprovalMode::Approve,
+    ActionApprovalMode::FullAccess,
+    ActionApprovalMode::Custom,
+];
+
 const fn const_str_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
     let b = b.as_bytes();
@@ -150,8 +207,62 @@ fn render_inline_code_markdown(text: &str, cx: &App) -> StyledText {
     StyledText::new(plain).with_highlights(highlights)
 }
 
-/// Renders the main tool permissions setup page showing a list of tools
+/// Renders the main action-approval setup page.
 pub(crate) fn render_tool_permissions_setup_page(
+    _settings_window: &SettingsWindow,
+    scroll_handle: &ScrollHandle,
+    window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let current_mode = current_action_approval_mode(cx);
+    let scroll_step = px(40.);
+
+    v_flex()
+        .id("action-approval-page")
+        .on_action({
+            let scroll_handle = scroll_handle.clone();
+            move |_: &menu::SelectNext, window, cx| {
+                window.focus_next(cx);
+                let current_offset = scroll_handle.offset();
+                scroll_handle.set_offset(point(current_offset.x, current_offset.y - scroll_step));
+            }
+        })
+        .on_action({
+            let scroll_handle = scroll_handle.clone();
+            move |_: &menu::SelectPrevious, window, cx| {
+                window.focus_prev(cx);
+                let current_offset = scroll_handle.offset();
+                scroll_handle.set_offset(point(current_offset.x, current_offset.y + scroll_step));
+            }
+        })
+        .min_w_0()
+        .size_full()
+        .pt_2p5()
+        .px_8()
+        .pb_16()
+        .overflow_y_scroll()
+        .track_scroll(scroll_handle)
+        .child(
+            Banner::new().child(
+                Label::new(ACTION_APPROVAL_DESCRIPTION)
+                    .size(LabelSize::Small)
+                    .color(Color::Muted)
+                    .mt_0p5(),
+            ),
+        )
+        .child(
+            v_flex()
+                .my_4()
+                .gap_2()
+                .child(Label::new("How should agent actions be approved?"))
+                .children(ACTION_APPROVAL_MODES.iter().map(|mode| {
+                    render_action_approval_mode_row(*mode, *mode == current_mode, window, cx)
+                })),
+        )
+        .into_any_element()
+}
+
+fn render_tool_permissions_advanced_page(
     settings_window: &SettingsWindow,
     scroll_handle: &ScrollHandle,
     window: &mut Window,
@@ -203,6 +314,8 @@ pub(crate) fn render_tool_permissions_setup_page(
         )
         .child(
             v_flex()
+                .child(render_sandbox_permissions_item(window, cx))
+                .child(Divider::horizontal())
                 .child(render_global_default_mode_section(global_default))
                 .child(Divider::horizontal())
                 .children(tool_items.into_iter().enumerate().flat_map(|(i, item)| {
@@ -214,6 +327,176 @@ pub(crate) fn render_tool_permissions_setup_page(
                 })),
         )
         .into_any_element()
+}
+
+fn render_action_approval_mode_row(
+    mode: ActionApprovalMode,
+    selected: bool,
+    _window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    let colors = cx.theme().colors();
+    let row = h_flex()
+        .id(format!("action-approval-mode-{}", mode.id()))
+        .w_full()
+        .min_w_0()
+        .min_h(rems_from_px(64.))
+        .px_3()
+        .py_2()
+        .gap_3()
+        .rounded_md()
+        .cursor_pointer()
+        .border_1()
+        .border_color(if selected {
+            colors.border_focused
+        } else {
+            colors.border.opacity(0.0)
+        })
+        .bg(if selected {
+            colors.element_background.opacity(0.55)
+        } else {
+            colors.element_background.opacity(0.0)
+        })
+        .hover(|style| style.bg(colors.element_background.opacity(0.35)))
+        .child(
+            div().w_6().flex_none().flex().justify_center().child(
+                Icon::new(mode.icon())
+                    .size(IconSize::Medium)
+                    .color(Color::Muted),
+            ),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .w_full()
+                .child(Label::new(mode.title()))
+                .child(
+                    Label::new(mode.description())
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+        )
+        .when(selected, |this| {
+            this.child(
+                Icon::new(IconName::Check)
+                    .size(IconSize::Small)
+                    .color(Color::Default),
+            )
+        });
+
+    match mode {
+        ActionApprovalMode::Custom => row
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.push_dynamic_sub_page(
+                    "Custom Permissions",
+                    "Action Approval",
+                    None,
+                    true,
+                    render_tool_permissions_advanced_page,
+                    window,
+                    cx,
+                );
+            }))
+            .into_any_element(),
+        mode => row
+            .on_click(move |_, _, cx| set_action_approval_mode(mode, cx))
+            .into_any_element(),
+    }
+}
+
+fn render_sandbox_permissions_item(
+    _window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .py_3()
+        .justify_between()
+        .child(
+            v_flex()
+                .w_full()
+                .min_w_0()
+                .child(Label::new("Sandbox"))
+                .child(
+                    Label::new("Configure terminal network, filesystem, and unsandboxed grants.")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+        )
+        .child(
+            Button::new("configure-sandbox-permissions", "Configure")
+                .tab_index(0_isize)
+                .style(ButtonStyle::OutlinedGhost)
+                .size(ButtonSize::Medium)
+                .end_icon(
+                    Icon::new(IconName::ChevronRight)
+                        .size(IconSize::Small)
+                        .color(Color::Muted),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.push_dynamic_sub_page(
+                        "Sandbox",
+                        "Custom Permissions",
+                        Some("agent.sandbox_permissions"),
+                        true,
+                        render_sandbox_settings_page,
+                        window,
+                        cx,
+                    );
+                })),
+        )
+        .into_any_element()
+}
+
+fn current_action_approval_mode(cx: &App) -> ActionApprovalMode {
+    let settings = AgentSettings::get_global(cx);
+    if !settings.tool_permissions.tools.is_empty() {
+        return ActionApprovalMode::Custom;
+    }
+
+    let sandbox = &settings.sandbox_permissions;
+    let restrictive_sandbox = !sandbox.allow_unsandboxed
+        && !sandbox.allow_all_hosts
+        && !sandbox.allow_fs_write_all
+        && sandbox.network_hosts.is_empty()
+        && sandbox.write_paths.is_empty();
+
+    match (settings.tool_permissions.default, restrictive_sandbox) {
+        (ToolPermissionMode::Confirm, true) => ActionApprovalMode::Ask,
+        (ToolPermissionMode::Allow, true) => ActionApprovalMode::Approve,
+        (ToolPermissionMode::Allow, false) if sandbox.allow_unsandboxed => {
+            ActionApprovalMode::FullAccess
+        }
+        _ => ActionApprovalMode::Custom,
+    }
+}
+
+fn set_action_approval_mode(mode: ActionApprovalMode, cx: &mut App) {
+    if mode == ActionApprovalMode::Custom {
+        return;
+    }
+
+    SettingsStore::global(cx).update_settings_file(<dyn fs::Fs>::global(cx), move |settings, _| {
+        let agent = settings.agent.get_or_insert_default();
+        let tool_permissions = agent.tool_permissions.get_or_insert_default();
+        tool_permissions.default = Some(match mode {
+            ActionApprovalMode::Ask => ToolPermissionMode::Confirm,
+            ActionApprovalMode::Approve | ActionApprovalMode::FullAccess => {
+                ToolPermissionMode::Allow
+            }
+            ActionApprovalMode::Custom => return,
+        });
+        tool_permissions.tools.clear();
+
+        let sandbox_permissions = agent.sandbox_permissions.get_or_insert_default();
+        let full_access = mode == ActionApprovalMode::FullAccess;
+        sandbox_permissions.allow_unsandboxed = Some(full_access);
+        sandbox_permissions.allow_all_hosts = Some(full_access);
+        sandbox_permissions.allow_fs_write_all = Some(full_access);
+        sandbox_permissions.network_hosts = None;
+        sandbox_permissions.write_paths = None;
+    });
 }
 
 fn render_tool_list_item(

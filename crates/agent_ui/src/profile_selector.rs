@@ -1,25 +1,11 @@
-use crate::{
-    CycleModeSelector, ManageProfiles, ToggleProfileSelector, ui::documentation_aside_side,
-};
-use agent_settings::{
-    AgentProfile, AgentProfileId, AgentSettings, AvailableProfiles, builtin_profiles,
-};
+use crate::{CycleModeSelector, ToggleProfileSelector};
+use agent_settings::{AgentProfileId, AgentSettings, builtin_profiles};
 use fs::Fs;
-use fuzzy::{StringMatch, StringMatchCandidate, match_strings};
-use gpui::{
-    Action, AnyElement, AnyView, App, BackgroundExecutor, Context, DismissEvent, Empty, Entity,
-    FocusHandle, Focusable, ForegroundExecutor, SharedString, Subscription, Task, Window,
-};
-use picker::{Picker, PickerDelegate, popover_menu::PickerPopoverMenu};
-use settings::{Settings as _, SettingsStore, update_settings_file};
-use std::{
-    sync::atomic::Ordering,
-    sync::{Arc, atomic::AtomicBool},
-};
-use ui::{
-    DocumentationAside, HighlightedLabel, KeyBinding, LabelSize, ListItem, ListItemSpacing,
-    PopoverMenuHandle, Tooltip, prelude::*,
-};
+use gpui::{AnyElement, App, Context, Empty, Entity, FocusHandle, Focusable, Subscription, Window};
+use settings::{Settings as _, SettingsStore, ToolPermissionMode, update_settings_file};
+use std::sync::Arc;
+use ui::{ContextMenu, KeyBinding, LabelSize, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*};
+use zed_actions::OpenSettingsAt;
 
 /// Trait for types that can provide and manage agent profiles
 pub trait ProfileProvider {
@@ -37,15 +23,58 @@ pub trait ProfileProvider {
 }
 
 pub struct ProfileSelector {
-    profiles: AvailableProfiles,
-    pending_refresh: bool,
     fs: Arc<dyn Fs>,
     provider: Arc<dyn ProfileProvider>,
-    picker: Option<Entity<Picker<ProfilePickerDelegate>>>,
-    picker_handle: PopoverMenuHandle<Picker<ProfilePickerDelegate>>,
+    approval_menu_handle: PopoverMenuHandle<ContextMenu>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionApprovalMode {
+    Ask,
+    Approve,
+    FullAccess,
+    Custom,
+}
+
+impl ActionApprovalMode {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask for approval",
+            Self::Approve => "Approve for me",
+            Self::FullAccess => "Full access",
+            Self::Custom => "Custom (settings.json)",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Ask => "Always ask before tool actions, network access, and sandbox escapes.",
+            Self::Approve => "Only ask for actions detected as potentially unsafe.",
+            Self::FullAccess => {
+                "Unrestricted access to the internet and any file on your computer."
+            }
+            Self::Custom => "Uses permissions defined in settings.json.",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::Ask => IconName::LockOutlined,
+            Self::Approve => IconName::UserCheck,
+            Self::FullAccess => IconName::Public,
+            Self::Custom => IconName::Settings,
+        }
+    }
+}
+
+const ACTION_APPROVAL_MODES: &[ActionApprovalMode] = &[
+    ActionApprovalMode::Ask,
+    ActionApprovalMode::Approve,
+    ActionApprovalMode::FullAccess,
+    ActionApprovalMode::Custom,
+];
 
 impl ProfileSelector {
     pub fn new(
@@ -54,25 +83,22 @@ impl ProfileSelector {
         focus_handle: FocusHandle,
         cx: &mut Context<Self>,
     ) -> Self {
-        let settings_subscription = cx.observe_global::<SettingsStore>(move |this, cx| {
-            this.pending_refresh = true;
+        let settings_subscription = cx.observe_global::<SettingsStore>(move |_this, cx| {
             cx.notify();
         });
+        provider.set_profile(write_profile_id(), cx);
 
         Self {
-            profiles: AgentProfile::available_profiles(cx),
-            pending_refresh: false,
             fs,
             provider,
-            picker: None,
-            picker_handle: PopoverMenuHandle::default(),
+            approval_menu_handle: PopoverMenuHandle::default(),
             focus_handle,
             _subscriptions: vec![settings_subscription],
         }
     }
 
-    pub fn menu_handle(&self) -> PopoverMenuHandle<Picker<ProfilePickerDelegate>> {
-        self.picker_handle.clone()
+    pub fn menu_handle(&self) -> PopoverMenuHandle<ContextMenu> {
+        self.approval_menu_handle.clone()
     }
 
     pub fn cycle_profile(&mut self, cx: &mut Context<Self>) {
@@ -80,87 +106,28 @@ impl ProfileSelector {
             return;
         }
 
-        let profiles = AgentProfile::available_profiles(cx);
-        if profiles.is_empty() {
-            return;
-        }
-
-        let current_profile_id = self.provider.profile_id(cx);
-        let current_index = profiles
-            .keys()
-            .position(|id| id == &current_profile_id)
+        self.provider.set_profile(write_profile_id(), cx);
+        let current_mode = current_action_approval_mode(cx);
+        let current_index = ACTION_APPROVAL_MODES
+            .iter()
+            .position(|mode| *mode == current_mode)
             .unwrap_or(0);
-
-        let next_index = (current_index + 1) % profiles.len();
-
-        if let Some((next_profile_id, _)) = profiles.get_index(next_index) {
-            self.provider.set_profile(next_profile_id.clone(), cx);
-            telemetry::event!(
-                "Agent Profile Switched",
-                profile_id = next_profile_id.as_str(),
-                source = "cycle"
-            );
-            cx.notify();
+        if let Some(next_mode) =
+            ACTION_APPROVAL_MODES.get((current_index + 1) % ACTION_APPROVAL_MODES.len())
+        {
+            set_action_approval_mode(self.fs.clone(), *next_mode, cx);
         }
-    }
-
-    fn ensure_picker(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<Picker<ProfilePickerDelegate>> {
-        if self.picker.is_none() {
-            let delegate = ProfilePickerDelegate::new(
-                self.fs.clone(),
-                self.provider.clone(),
-                self.profiles.clone(),
-                cx.foreground_executor().clone(),
-                cx.background_executor().clone(),
-                self.focus_handle.clone(),
-                cx,
-            );
-
-            let picker = cx.new(|cx| {
-                Picker::list(delegate, window, cx)
-                    .show_scrollbar(true)
-                    .minimum_results_width(rems(18.))
-                    .height(rems(20.))
-                    .no_vertical_padding()
-            });
-
-            self.picker = Some(picker);
-        }
-
-        if self.pending_refresh {
-            if let Some(picker) = &self.picker {
-                let profiles = AgentProfile::available_profiles(cx);
-                self.profiles = profiles.clone();
-                picker.update(cx, |picker, cx| {
-                    let query = picker.query(cx);
-                    picker
-                        .delegate
-                        .refresh_profiles(profiles.clone(), query, cx);
-                });
-            }
-            self.pending_refresh = false;
-        }
-
-        self.picker.as_ref().unwrap().clone()
     }
 }
 
 impl Focusable for ProfileSelector {
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        if let Some(picker) = &self.picker {
-            picker.focus_handle(cx)
-        } else {
-            self.focus_handle.clone()
-        }
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 
 impl Render for ProfileSelector {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.provider.model_selected(cx) {
             return Empty.into_any_element();
         }
@@ -174,666 +141,180 @@ impl Render for ProfileSelector {
                 .into_any_element();
         }
 
-        let picker = self.ensure_picker(window, cx);
+        self.provider.set_profile(write_profile_id(), cx);
+        let current_mode = current_action_approval_mode(cx);
 
-        let settings = AgentSettings::get_global(cx);
-        let profile_id = self.provider.profile_id(cx);
-        let profile = settings.profiles.get(&profile_id);
-
-        let selected_profile = profile
-            .map(|profile| profile.name.clone())
-            .unwrap_or_else(|| "Unknown".into());
-
-        let icon = if self.picker_handle.is_deployed() {
+        let icon = if self.approval_menu_handle.is_deployed() {
             IconName::ChevronUp
         } else {
             IconName::ChevronDown
         };
 
-        let trigger_button = Button::new("profile-selector", selected_profile)
+        let trigger_button = Button::new("action-approval-selector", current_mode.title())
             .label_size(LabelSize::Small)
             .color(Color::Muted)
             .end_icon(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted));
 
-        let tooltip: Box<dyn Fn(&mut Window, &mut App) -> AnyView> = Box::new(Tooltip::element({
-            move |_window, cx| {
-                let container = || h_flex().gap_1().justify_between();
-                v_flex()
-                    .gap_1()
-                    .child(
-                        container()
-                            .child(Label::new("Change Profile"))
-                            .child(KeyBinding::for_action(&ToggleProfileSelector, cx)),
-                    )
-                    .child(
-                        container()
-                            .pt_1()
-                            .border_t_1()
-                            .border_color(cx.theme().colors().border_variant)
-                            .child(Label::new("Cycle Through Profiles"))
-                            .child(KeyBinding::for_action(&CycleModeSelector, cx)),
-                    )
-                    .into_any()
-            }
-        }));
-
-        PickerPopoverMenu::new(
-            picker,
-            trigger_button,
-            tooltip,
-            gpui::Anchor::BottomRight,
-            cx,
-        )
-        .with_handle(self.picker_handle.clone())
-        .render(window, cx)
-        .into_any_element()
-    }
-}
-
-#[derive(Clone)]
-struct ProfileCandidate {
-    id: AgentProfileId,
-    name: SharedString,
-    is_builtin: bool,
-}
-
-#[derive(Clone)]
-struct ProfileMatchEntry {
-    candidate_index: usize,
-    positions: Vec<usize>,
-}
-
-enum ProfilePickerEntry {
-    Header(SharedString),
-    Profile(ProfileMatchEntry),
-}
-
-pub struct ProfilePickerDelegate {
-    fs: Arc<dyn Fs>,
-    provider: Arc<dyn ProfileProvider>,
-    foreground: ForegroundExecutor,
-    background: BackgroundExecutor,
-    candidates: Vec<ProfileCandidate>,
-    string_candidates: Arc<Vec<StringMatchCandidate>>,
-    filtered_entries: Vec<ProfilePickerEntry>,
-    selected_index: usize,
-    hovered_index: Option<usize>,
-    query: String,
-    cancel: Option<Arc<AtomicBool>>,
-    focus_handle: FocusHandle,
-}
-
-impl ProfilePickerDelegate {
-    fn new(
-        fs: Arc<dyn Fs>,
-        provider: Arc<dyn ProfileProvider>,
-        profiles: AvailableProfiles,
-        foreground: ForegroundExecutor,
-        background: BackgroundExecutor,
-        focus_handle: FocusHandle,
-        cx: &mut Context<ProfileSelector>,
-    ) -> Self {
-        let candidates = Self::candidates_from(profiles);
-        let string_candidates = Arc::new(Self::string_candidates(&candidates));
-        let filtered_entries = Self::entries_from_candidates(&candidates);
-
-        let mut this = Self {
-            fs,
-            provider,
-            foreground,
-            background,
-            candidates,
-            string_candidates,
-            filtered_entries,
-            selected_index: 0,
-            hovered_index: None,
-            query: String::new(),
-            cancel: None,
-            focus_handle,
-        };
-
-        this.selected_index = this
-            .index_of_profile(&this.provider.profile_id(cx))
-            .unwrap_or_else(|| this.first_selectable_index().unwrap_or(0));
-
-        this
-    }
-
-    fn refresh_profiles(
-        &mut self,
-        profiles: AvailableProfiles,
-        query: String,
-        cx: &mut Context<Picker<Self>>,
-    ) {
-        self.candidates = Self::candidates_from(profiles);
-        self.string_candidates = Arc::new(Self::string_candidates(&self.candidates));
-        self.query = query;
-
-        if self.query.is_empty() {
-            self.filtered_entries = Self::entries_from_candidates(&self.candidates);
-        } else {
-            let matches = self.search_blocking(&self.query);
-            self.filtered_entries = self.entries_from_matches(matches);
-        }
-
-        self.selected_index = self
-            .index_of_profile(&self.provider.profile_id(cx))
-            .unwrap_or_else(|| self.first_selectable_index().unwrap_or(0));
-        cx.notify();
-    }
-
-    fn candidates_from(profiles: AvailableProfiles) -> Vec<ProfileCandidate> {
-        profiles
-            .into_iter()
-            .map(|(id, name)| ProfileCandidate {
-                is_builtin: builtin_profiles::is_builtin(&id),
-                id,
-                name,
-            })
-            .collect()
-    }
-
-    fn string_candidates(candidates: &[ProfileCandidate]) -> Vec<StringMatchCandidate> {
-        candidates
-            .iter()
-            .enumerate()
-            .map(|(index, candidate)| StringMatchCandidate::new(index, candidate.name.as_ref()))
-            .collect()
-    }
-
-    fn documentation(candidate: &ProfileCandidate) -> Option<&'static str> {
-        match candidate.id.as_str() {
-            builtin_profiles::WRITE => Some("Get help to write anything."),
-            builtin_profiles::ASK => Some("Chat about your codebase."),
-            builtin_profiles::MINIMAL => Some("Chat about anything with no tools."),
-            _ => None,
-        }
-    }
-
-    fn entries_from_candidates(candidates: &[ProfileCandidate]) -> Vec<ProfilePickerEntry> {
-        let mut entries = Vec::new();
-        let mut inserted_custom_header = false;
-
-        for (idx, candidate) in candidates.iter().enumerate() {
-            if !candidate.is_builtin && !inserted_custom_header {
-                if !entries.is_empty() {
-                    entries.push(ProfilePickerEntry::Header("Custom Profiles".into()));
-                }
-                inserted_custom_header = true;
-            }
-
-            entries.push(ProfilePickerEntry::Profile(ProfileMatchEntry {
-                candidate_index: idx,
-                positions: Vec::new(),
-            }));
-        }
-
-        entries
-    }
-
-    fn entries_from_matches(&self, matches: Vec<StringMatch>) -> Vec<ProfilePickerEntry> {
-        let mut entries = Vec::new();
-        for mat in matches {
-            if self.candidates.get(mat.candidate_id).is_some() {
-                entries.push(ProfilePickerEntry::Profile(ProfileMatchEntry {
-                    candidate_index: mat.candidate_id,
-                    positions: mat.positions,
-                }));
-            }
-        }
-        entries
-    }
-
-    fn first_selectable_index(&self) -> Option<usize> {
-        self.filtered_entries
-            .iter()
-            .position(|entry| matches!(entry, ProfilePickerEntry::Profile(_)))
-    }
-
-    fn index_of_profile(&self, profile_id: &AgentProfileId) -> Option<usize> {
-        self.filtered_entries.iter().position(|entry| {
-            matches!(entry, ProfilePickerEntry::Profile(profile) if self
-                .candidates
-                .get(profile.candidate_index)
-                .map(|candidate| &candidate.id == profile_id)
-                .unwrap_or(false))
-        })
-    }
-
-    fn search_blocking(&self, query: &str) -> Vec<StringMatch> {
-        if query.is_empty() {
-            return self
-                .string_candidates
-                .iter()
-                .map(|candidate| StringMatch {
-                    candidate_id: candidate.id,
-                    score: 0.0,
-                    positions: Vec::new(),
-                    string: candidate.string.clone(),
-                })
-                .collect();
-        }
-
-        let cancel_flag = AtomicBool::new(false);
-
-        self.foreground.block_on(match_strings(
-            self.string_candidates.as_ref(),
-            query,
-            false,
-            true,
-            100,
-            &cancel_flag,
-            self.background.clone(),
-        ))
-    }
-}
-
-impl PickerDelegate for ProfilePickerDelegate {
-    type ListItem = AnyElement;
-
-    fn name() -> &'static str {
-        "profile selector"
-    }
-
-    fn placeholder_text(&self, _: &mut Window, _: &mut App) -> Arc<str> {
-        "Search profiles…".into()
-    }
-
-    fn no_matches_text(&self, _window: &mut Window, _cx: &mut App) -> Option<SharedString> {
-        let text = if self.candidates.is_empty() {
-            "No profiles.".into()
-        } else {
-            "No profiles match your search.".into()
-        };
-        Some(text)
-    }
-
-    fn match_count(&self) -> usize {
-        self.filtered_entries.len()
-    }
-
-    fn selected_index(&self) -> usize {
-        self.selected_index
-    }
-
-    fn set_selected_index(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Picker<Self>>) {
-        self.selected_index = ix.min(self.filtered_entries.len().saturating_sub(1));
-        cx.notify();
-    }
-
-    fn can_select(&self, ix: usize, _window: &mut Window, _cx: &mut Context<Picker<Self>>) -> bool {
-        match self.filtered_entries.get(ix) {
-            Some(ProfilePickerEntry::Profile(_)) => true,
-            Some(ProfilePickerEntry::Header(_)) | None => false,
-        }
-    }
-
-    fn update_matches(
-        &mut self,
-        query: String,
-        window: &mut Window,
-        cx: &mut Context<Picker<Self>>,
-    ) -> Task<()> {
-        if query.is_empty() {
-            self.query.clear();
-            self.filtered_entries = Self::entries_from_candidates(&self.candidates);
-            self.selected_index = self
-                .index_of_profile(&self.provider.profile_id(cx))
-                .unwrap_or_else(|| self.first_selectable_index().unwrap_or(0));
-            cx.notify();
-            return Task::ready(());
-        }
-
-        if let Some(prev) = &self.cancel {
-            prev.store(true, Ordering::Relaxed);
-        }
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.cancel = Some(cancel.clone());
-
-        let string_candidates = self.string_candidates.clone();
-        let background = self.background.clone();
-        let provider = self.provider.clone();
-        self.query = query.clone();
-
-        let cancel_for_future = cancel;
-
-        cx.spawn_in(window, async move |this, cx| {
-            let matches = match_strings(
-                string_candidates.as_ref(),
-                &query,
-                false,
-                true,
-                100,
-                cancel_for_future.as_ref(),
-                background,
-            )
-            .await;
-
-            this.update_in(cx, |this, _, cx| {
-                if this.delegate.query != query {
-                    return;
-                }
-
-                this.delegate.filtered_entries = this.delegate.entries_from_matches(matches);
-                this.delegate.selected_index = this
-                    .delegate
-                    .index_of_profile(&provider.profile_id(cx))
-                    .unwrap_or_else(|| this.delegate.first_selectable_index().unwrap_or(0));
-                cx.notify();
-            })
-            .ok();
-        })
-    }
-
-    fn confirm(&mut self, _: bool, _window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        match self.filtered_entries.get(self.selected_index) {
-            Some(ProfilePickerEntry::Profile(entry)) => {
-                if let Some(candidate) = self.candidates.get(entry.candidate_index) {
-                    let profile_id = candidate.id.clone();
-                    let fs = self.fs.clone();
-                    let provider = self.provider.clone();
-
-                    update_settings_file(fs, cx, {
-                        let profile_id = profile_id.clone();
-                        move |settings, _cx| {
-                            settings
-                                .agent
-                                .get_or_insert_default()
-                                .set_profile(profile_id.0);
-                        }
-                    });
-
-                    provider.set_profile(profile_id.clone(), cx);
-
-                    telemetry::event!(
-                        "Agent Profile Switched",
-                        profile_id = profile_id.as_str(),
-                        source = "picker"
-                    );
-                }
-
-                cx.emit(DismissEvent);
-            }
-            _ => {}
-        }
-    }
-
-    fn dismissed(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        cx.defer_in(window, |picker, window, cx| {
-            picker.set_query("", window, cx);
-        });
-        cx.emit(DismissEvent);
-    }
-
-    fn render_match(
-        &self,
-        ix: usize,
-        selected: bool,
-        _: &mut Window,
-        cx: &mut Context<Picker<Self>>,
-    ) -> Option<Self::ListItem> {
-        match self.filtered_entries.get(ix)? {
-            ProfilePickerEntry::Header(label) => Some(
-                div()
-                    .px_2p5()
-                    .pb_0p5()
-                    .when(ix > 0, |this| {
-                        this.mt_1p5()
-                            .pt_2()
-                            .border_t_1()
-                            .border_color(cx.theme().colors().border_variant)
-                    })
-                    .child(
-                        Label::new(label.clone())
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    )
-                    .into_any_element(),
-            ),
-            ProfilePickerEntry::Profile(entry) => {
-                let candidate = self.candidates.get(entry.candidate_index)?;
-                let active_id = self.provider.profile_id(cx);
-                let is_active = active_id == candidate.id;
-                let has_documentation = Self::documentation(candidate).is_some();
-
-                Some(
-                    div()
-                        .id(("profile-picker-item", ix))
-                        .when(has_documentation, |this| {
-                            this.on_hover(cx.listener(move |picker, hovered, _, cx| {
-                                if *hovered {
-                                    picker.delegate.hovered_index = Some(ix);
-                                } else if picker.delegate.hovered_index == Some(ix) {
-                                    picker.delegate.hovered_index = None;
-                                }
-                                cx.notify();
-                            }))
-                        })
+        let fs = self.fs.clone();
+        PopoverMenu::new("action-approval-selector")
+            .trigger_with_tooltip(
+                trigger_button,
+                Tooltip::element(move |_window, cx| {
+                    let container = || h_flex().gap_1().justify_between();
+                    v_flex()
+                        .gap_1()
                         .child(
-                            ListItem::new(candidate.id.0.clone())
-                                .inset(true)
-                                .spacing(ListItemSpacing::Sparse)
-                                .toggle_state(selected)
-                                .child(HighlightedLabel::new(
-                                    candidate.name.clone(),
-                                    entry.positions.clone(),
-                                ))
-                                .when(is_active, |this| {
-                                    this.end_slot(
-                                        div()
-                                            .pr_2()
-                                            .child(Icon::new(IconName::Check).color(Color::Accent)),
-                                    )
-                                }),
+                            container()
+                                .child(Label::new("Change Approval"))
+                                .child(KeyBinding::for_action(&ToggleProfileSelector, cx)),
                         )
-                        .into_any_element(),
-                )
-            }
-        }
-    }
-
-    fn documentation_aside(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Picker<Self>>,
-    ) -> Option<DocumentationAside> {
-        use std::rc::Rc;
-
-        let hovered_index = self.hovered_index?;
-        let entry = match self.filtered_entries.get(hovered_index)? {
-            ProfilePickerEntry::Profile(entry) => entry,
-            ProfilePickerEntry::Header(_) => return None,
-        };
-
-        let candidate = self.candidates.get(entry.candidate_index)?;
-        let docs_aside = Self::documentation(candidate)?.to_string();
-
-        let side = documentation_aside_side(cx);
-
-        Some(DocumentationAside {
-            side,
-            render: Rc::new(move |_| Label::new(docs_aside.clone()).into_any_element()),
-        })
-    }
-
-    fn documentation_aside_index(&self) -> Option<usize> {
-        self.hovered_index
-    }
-
-    fn render_footer(
-        &self,
-        _: &mut Window,
-        cx: &mut Context<Picker<Self>>,
-    ) -> Option<gpui::AnyElement> {
-        let focus_handle = self.focus_handle.clone();
-
-        Some(
-            h_flex()
-                .w_full()
-                .border_t_1()
-                .border_color(cx.theme().colors().border_variant)
-                .p_1p5()
-                .child(
-                    Button::new("configure", "Configure")
-                        .full_width()
-                        .style(ButtonStyle::Outlined)
-                        .key_binding(
-                            KeyBinding::for_action_in(
-                                &ManageProfiles::default(),
-                                &focus_handle,
-                                cx,
-                            )
-                            .map(|kb| kb.size(rems_from_px(12.))),
+                        .child(
+                            container()
+                                .pt_1()
+                                .border_t_1()
+                                .border_color(cx.theme().colors().border_variant)
+                                .child(Label::new("Cycle Approval"))
+                                .child(KeyBinding::for_action(&CycleModeSelector, cx)),
                         )
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(ManageProfiles::default().boxed_clone(), cx);
-                        }),
-                )
-                .into_any(),
-        )
+                        .into_any()
+                }),
+            )
+            .menu(move |window, cx| {
+                Some(build_action_approval_menu(
+                    fs.clone(),
+                    current_mode,
+                    window,
+                    cx,
+                ))
+            })
+            .anchor(gpui::Anchor::BottomRight)
+            .with_handle(self.approval_menu_handle.clone())
+            .into_any_element()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fs::FakeFs;
-    use gpui::TestAppContext;
+fn write_profile_id() -> AgentProfileId {
+    AgentProfileId(builtin_profiles::WRITE.into())
+}
 
-    #[gpui::test]
-    fn entries_include_custom_profiles(_cx: &mut TestAppContext) {
-        let candidates = vec![
-            ProfileCandidate {
-                id: AgentProfileId("write".into()),
-                name: SharedString::from("Write"),
-                is_builtin: true,
-            },
-            ProfileCandidate {
-                id: AgentProfileId("my-custom".into()),
-                name: SharedString::from("My Custom"),
-                is_builtin: false,
-            },
-        ];
-
-        let entries = ProfilePickerDelegate::entries_from_candidates(&candidates);
-
-        assert!(entries.iter().any(|entry| matches!(
-            entry,
-            ProfilePickerEntry::Profile(profile)
-                if candidates[profile.candidate_index].id.as_str() == "my-custom"
-        )));
-        assert!(entries.iter().any(|entry| matches!(
-            entry,
-            ProfilePickerEntry::Header(label) if label.as_ref() == "Custom Profiles"
-        )));
+fn current_action_approval_mode(cx: &App) -> ActionApprovalMode {
+    let settings = AgentSettings::get_global(cx);
+    if !settings.tool_permissions.tools.is_empty() {
+        return ActionApprovalMode::Custom;
     }
 
-    #[gpui::test]
-    fn fuzzy_filter_returns_no_results_and_keeps_configure(cx: &mut TestAppContext) {
-        let candidates = vec![ProfileCandidate {
-            id: AgentProfileId("write".into()),
-            name: SharedString::from("Write"),
-            is_builtin: true,
-        }];
+    let sandbox = &settings.sandbox_permissions;
+    let restrictive_sandbox = !sandbox.allow_unsandboxed
+        && !sandbox.allow_all_hosts
+        && !sandbox.allow_fs_write_all
+        && sandbox.network_hosts.is_empty()
+        && sandbox.write_paths.is_empty();
 
-        cx.update(|cx| {
-            let focus_handle = cx.focus_handle();
+    match (settings.tool_permissions.default, restrictive_sandbox) {
+        (ToolPermissionMode::Confirm, true) => ActionApprovalMode::Ask,
+        (ToolPermissionMode::Allow, true) => ActionApprovalMode::Approve,
+        (ToolPermissionMode::Allow, false) if sandbox.allow_unsandboxed => {
+            ActionApprovalMode::FullAccess
+        }
+        _ => ActionApprovalMode::Custom,
+    }
+}
 
-            let delegate = ProfilePickerDelegate {
-                fs: FakeFs::new(cx.background_executor().clone()),
-                provider: Arc::new(TestProfileProvider::new(AgentProfileId("write".into()))),
-                foreground: cx.foreground_executor().clone(),
-                background: cx.background_executor().clone(),
-                candidates,
-                string_candidates: Arc::new(Vec::new()),
-                filtered_entries: Vec::new(),
-                selected_index: 0,
-                hovered_index: None,
-                query: String::new(),
-                cancel: None,
-                focus_handle,
-            };
+fn build_action_approval_menu(
+    fs: Arc<dyn Fs>,
+    current_mode: ActionApprovalMode,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ContextMenu> {
+    ContextMenu::build(window, cx, move |mut menu, _window, _cx| {
+        menu = menu.fixed_width(rems(30.).into());
+        for mode in ACTION_APPROVAL_MODES {
+            let fs = fs.clone();
+            let mode = *mode;
+            menu = menu.custom_entry(
+                move |_window, cx| render_action_approval_row(mode, mode == current_mode, cx),
+                move |window, cx| {
+                    if mode == ActionApprovalMode::Custom {
+                        window.dispatch_action(
+                            Box::new(OpenSettingsAt {
+                                path: "agent.tool_permissions".to_string(),
+                                target: None,
+                            }),
+                            cx,
+                        );
+                    } else {
+                        set_action_approval_mode(fs.clone(), mode, cx);
+                    }
+                },
+            );
+        }
+        menu.key_context("ActionApprovalSelector")
+    })
+}
 
-            let matches = Vec::new(); // No matches
-            let _entries = delegate.entries_from_matches(matches);
-        });
+fn render_action_approval_row(
+    mode: ActionApprovalMode,
+    selected: bool,
+    _cx: &mut App,
+) -> AnyElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .min_h(rems_from_px(58.))
+        .gap_3()
+        .child(
+            div().w_6().flex_none().flex().justify_center().child(
+                Icon::new(mode.icon())
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            ),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .flex_1()
+                .child(Label::new(mode.title()))
+                .child(
+                    Label::new(mode.description())
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+        )
+        .when(selected, |this| {
+            this.child(
+                Icon::new(IconName::Check)
+                    .size(IconSize::Small)
+                    .color(Color::Accent),
+            )
+        })
+        .into_any_element()
+}
+
+fn set_action_approval_mode(fs: Arc<dyn Fs>, mode: ActionApprovalMode, cx: &mut App) {
+    if mode == ActionApprovalMode::Custom {
+        return;
     }
 
-    #[gpui::test]
-    fn active_profile_selection_logic_works(cx: &mut TestAppContext) {
-        let candidates = vec![
-            ProfileCandidate {
-                id: AgentProfileId("write".into()),
-                name: SharedString::from("Write"),
-                is_builtin: true,
-            },
-            ProfileCandidate {
-                id: AgentProfileId("ask".into()),
-                name: SharedString::from("Ask"),
-                is_builtin: true,
-            },
-        ];
+    update_settings_file(fs, cx, move |settings, _| {
+        let agent = settings.agent.get_or_insert_default();
+        agent.default_profile = Some(builtin_profiles::WRITE.into());
 
-        cx.update(|cx| {
-            let focus_handle = cx.focus_handle();
-
-            let delegate = ProfilePickerDelegate {
-                fs: FakeFs::new(cx.background_executor().clone()),
-                provider: Arc::new(TestProfileProvider::new(AgentProfileId("write".into()))),
-                foreground: cx.foreground_executor().clone(),
-                background: cx.background_executor().clone(),
-                candidates,
-                string_candidates: Arc::new(Vec::new()),
-                hovered_index: None,
-                filtered_entries: vec![
-                    ProfilePickerEntry::Profile(ProfileMatchEntry {
-                        candidate_index: 0,
-                        positions: Vec::new(),
-                    }),
-                    ProfilePickerEntry::Profile(ProfileMatchEntry {
-                        candidate_index: 1,
-                        positions: Vec::new(),
-                    }),
-                ],
-                selected_index: 0,
-                query: String::new(),
-                cancel: None,
-                focus_handle,
-            };
-
-            // Active profile should be found at index 0
-            let active_index = delegate.index_of_profile(&AgentProfileId("write".into()));
-            assert_eq!(active_index, Some(0));
-        });
-    }
-
-    struct TestProfileProvider {
-        profile_id: AgentProfileId,
-        has_model: bool,
-    }
-
-    impl TestProfileProvider {
-        fn new(profile_id: AgentProfileId) -> Self {
-            Self {
-                profile_id,
-                has_model: true,
+        let tool_permissions = agent.tool_permissions.get_or_insert_default();
+        tool_permissions.default = Some(match mode {
+            ActionApprovalMode::Ask => ToolPermissionMode::Confirm,
+            ActionApprovalMode::Approve | ActionApprovalMode::FullAccess => {
+                ToolPermissionMode::Allow
             }
-        }
-    }
+            ActionApprovalMode::Custom => return,
+        });
+        tool_permissions.tools.clear();
 
-    impl ProfileProvider for TestProfileProvider {
-        fn profile_id(&self, _cx: &App) -> AgentProfileId {
-            self.profile_id.clone()
-        }
-
-        fn set_profile(&self, _profile_id: AgentProfileId, _cx: &mut App) {}
-
-        fn profiles_supported(&self, _cx: &App) -> bool {
-            true
-        }
-
-        fn model_selected(&self, _cx: &App) -> bool {
-            self.has_model
-        }
-    }
+        let sandbox_permissions = agent.sandbox_permissions.get_or_insert_default();
+        let full_access = mode == ActionApprovalMode::FullAccess;
+        sandbox_permissions.allow_unsandboxed = Some(full_access);
+        sandbox_permissions.allow_all_hosts = Some(full_access);
+        sandbox_permissions.allow_fs_write_all = Some(full_access);
+        sandbox_permissions.network_hosts = None;
+        sandbox_permissions.write_paths = None;
+    });
 }
