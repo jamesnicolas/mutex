@@ -1073,7 +1073,7 @@ mod tests {
         assert!(
             !changed.is_empty(),
             "action_log.changed_buffers() should be non-empty after streaming write, \
-             but no changed buffers were found \u{2014} Accept All / Reject All will not appear"
+             but no changed buffers were found"
         );
     }
 

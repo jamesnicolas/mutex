@@ -1242,8 +1242,11 @@ impl Thread {
         let templates = parent_thread.read(cx).templates.clone();
         let model = parent_thread.read(cx).model().cloned();
         let parent_action_log = parent_thread.read(cx).action_log().clone();
-        let action_log =
-            cx.new(|_cx| ActionLog::new(project.clone()).with_linked_action_log(parent_action_log));
+        let action_log = cx.new(|_cx| {
+            ActionLog::new(project.clone())
+                .with_linked_action_log(parent_action_log)
+                .with_auto_accept_edits()
+        });
         let mut thread = Self::new_internal(
             project,
             project_context,
@@ -1279,7 +1282,7 @@ impl Thread {
             context_server_registry,
             templates,
             model,
-            cx.new(|_cx| ActionLog::new(project)),
+            cx.new(|_cx| ActionLog::new(project).with_auto_accept_edits()),
             cx,
         )
     }
@@ -1690,7 +1693,7 @@ impl Thread {
             Self::prompt_capabilities(model.as_model().map(|model| model.as_ref())),
         );
 
-        let action_log = cx.new(|_| ActionLog::new(project.clone()));
+        let action_log = cx.new(|_| ActionLog::new(project.clone()).with_auto_accept_edits());
 
         Self {
             id,

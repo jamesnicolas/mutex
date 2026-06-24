@@ -2597,7 +2597,7 @@ mod tests {
     }
 
     // Verifies that after streaming_edit_file_tool edits a file, the action log
-    // reports changed buffers so that the Accept All / Reject All review UI appears.
+    // reports changed buffers for downstream diff handling.
     #[gpui::test]
     async fn test_streaming_edit_file_tool_registers_changed_buffers(cx: &mut TestAppContext) {
         let (edit_tool, _project, action_log, _fs, _thread) =
@@ -2633,7 +2633,7 @@ mod tests {
         assert!(
             !changed.is_empty(),
             "action_log.changed_buffers() should be non-empty after streaming edit,
-             but no changed buffers were found - Accept All / Reject All will not appear"
+             but no changed buffers were found"
         );
     }
 

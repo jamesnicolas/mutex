@@ -62,6 +62,7 @@ pub struct ActionLog {
     last_reject_undo: Option<LastRejectUndo>,
     /// Tracks the last time files were read by the agent, to detect external modifications
     file_read_times: HashMap<PathBuf, MTime>,
+    auto_accept_edits: bool,
 }
 
 impl ActionLog {
@@ -73,11 +74,17 @@ impl ActionLog {
             linked_action_log: None,
             last_reject_undo: None,
             file_read_times: HashMap::default(),
+            auto_accept_edits: false,
         }
     }
 
     pub fn with_linked_action_log(mut self, linked_action_log: Entity<ActionLog>) -> Self {
         self.linked_action_log = Some(linked_action_log);
+        self
+    }
+
+    pub fn with_auto_accept_edits(mut self) -> Self {
+        self.auto_accept_edits = true;
         self
     }
 
@@ -504,13 +511,36 @@ impl ActionLog {
             })
             .await;
         this.update(cx, |this, cx| {
+            let should_auto_accept_deletion = this.auto_accept_edits
+                && this
+                    .tracked_buffers
+                    .get(buffer)
+                    .is_some_and(|tracked_buffer| {
+                        matches!(tracked_buffer.status, TrackedBufferStatus::Deleted)
+                    });
+            if should_auto_accept_deletion {
+                this.tracked_buffers.remove(buffer);
+                cx.notify();
+                return anyhow::Ok(());
+            }
+
+            let auto_accept_edits = this.auto_accept_edits && !unreviewed_edits.is_empty();
             let tracked_buffer = this
                 .tracked_buffers
                 .get_mut(buffer)
                 .context("buffer not tracked")?;
-            tracked_buffer.diff_base = new_diff_base;
             tracked_buffer.snapshot = buffer_snapshot;
-            tracked_buffer.unreviewed_edits = unreviewed_edits;
+            if auto_accept_edits {
+                if let TrackedBufferStatus::Created { .. } = &mut tracked_buffer.status {
+                    tracked_buffer.status = TrackedBufferStatus::Modified;
+                }
+                tracked_buffer.diff_base = tracked_buffer.snapshot.as_rope().clone();
+                tracked_buffer.unreviewed_edits.clear();
+                tracked_buffer.schedule_diff_update(ChangeAuthor::User, cx);
+            } else {
+                tracked_buffer.diff_base = new_diff_base;
+                tracked_buffer.unreviewed_edits = unreviewed_edits;
+            }
             cx.notify();
             anyhow::Ok(())
         })?
@@ -1410,6 +1440,41 @@ mod tests {
             log.keep_edits_in_range(buffer.clone(), Point::new(0, 0)..Point::new(4, 3), None, cx)
         });
         cx.run_until_parked();
+        assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
+    }
+
+    #[gpui::test]
+    async fn test_auto_accept_edits(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/dir"), json!({"file": "abc\ndef\nghi"}))
+            .await;
+        let project = Project::test(fs.clone(), [path!("/dir").as_ref()], cx).await;
+        let action_log = cx.new(|_| ActionLog::new(project.clone()).with_auto_accept_edits());
+        let file_path = project
+            .read_with(cx, |project, cx| project.find_project_path("dir/file", cx))
+            .unwrap();
+        let buffer = project
+            .update(cx, |project, cx| project.open_buffer(file_path, cx))
+            .await
+            .unwrap();
+
+        cx.update(|cx| {
+            action_log.update(cx, |log, cx| log.buffer_read(buffer.clone(), cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer
+                    .edit([(Point::new(1, 1)..Point::new(1, 2), "E")], None, cx)
+                    .unwrap()
+            });
+            action_log.update(cx, |log, cx| log.buffer_edited(buffer.clone(), cx));
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            buffer.read_with(cx, |buffer, _| buffer.text()),
+            "abc\ndEf\nghi"
+        );
         assert_eq!(unreviewed_hunks(&action_log, cx), vec![]);
     }
 
@@ -2411,7 +2476,7 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
 
-        // User clicks "Accept All"
+        // User accepts all edits.
         action_log.update(cx, |log, cx| log.keep_all_edits(None, cx));
         cx.run_until_parked();
         assert!(fs.is_file(path!("/dir/new_file").as_ref()).await);
@@ -2429,7 +2494,7 @@ mod tests {
         cx.run_until_parked();
         assert_ne!(unreviewed_hunks(&action_log, cx), vec![]);
 
-        // User clicks "Reject All"
+        // User rejects all edits.
         action_log
             .update(cx, |log, cx| log.reject_all_edits(None, cx))
             .await;

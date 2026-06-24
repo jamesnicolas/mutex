@@ -1099,38 +1099,6 @@ impl Render for AgentDiffToolbar {
                                     }),
                             )
                             .into_any_element(),
-                        vertical_divider().into_any_element(),
-                        h_flex()
-                            .gap_0p5()
-                            .child(
-                                Button::new("reject-all", "Reject All")
-                                    .key_binding({
-                                        KeyBinding::for_action_in(
-                                            &RejectAll,
-                                            &editor_focus_handle,
-                                            cx,
-                                        )
-                                        .map(|kb| kb.size(rems_from_px(12.)))
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.dispatch_action(&RejectAll, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("keep-all", "Keep All")
-                                    .key_binding({
-                                        KeyBinding::for_action_in(
-                                            &KeepAll,
-                                            &editor_focus_handle,
-                                            cx,
-                                        )
-                                        .map(|kb| kb.size(rems_from_px(12.)))
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.dispatch_action(&KeepAll, window, cx)
-                                    })),
-                            )
-                            .into_any_element(),
                     ],
                 };
 
@@ -1189,37 +1157,7 @@ impl Render for AgentDiffToolbar {
                     return Empty.into_any();
                 }
 
-                let focus_handle = agent_diff.focus_handle(cx);
-
-                h_group_xl()
-                    .my_neg_1()
-                    .py_1()
-                    .items_center()
-                    .flex_wrap()
-                    .child(
-                        h_group_sm()
-                            .child(
-                                Button::new("reject-all", "Reject All")
-                                    .key_binding({
-                                        KeyBinding::for_action_in(&RejectAll, &focus_handle, cx)
-                                            .map(|kb| kb.size(rems_from_px(12.)))
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.dispatch_action(&RejectAll, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("keep-all", "Keep All")
-                                    .key_binding({
-                                        KeyBinding::for_action_in(&KeepAll, &focus_handle, cx)
-                                            .map(|kb| kb.size(rems_from_px(12.)))
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.dispatch_action(&KeepAll, window, cx)
-                                    })),
-                            ),
-                    )
-                    .into_any()
+                Empty.into_any()
             }
         }
     }
