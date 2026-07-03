@@ -17,8 +17,8 @@ use agent_ui::threads_archive_view::{
 };
 use agent_ui::{
     AcpThreadImportOnboarding, Agent, AgentPanel, AgentPanelEvent, AgentThreadSource,
-    ArchiveSelectedThread, CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE, NewTerminalThread,
-    NewThread, RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal,
+    ArchiveSelectedThread, ArchiveThread, CrossChannelImportOnboarding, DEFAULT_THREAD_TITLE,
+    NewTerminalThread, NewThread, RenameSelectedThread, TerminalId, ThreadId, ThreadImportModal,
     ThreadTitleRegenerationResult, channels_with_threads, import_threads_from_other_channels,
 };
 use agent_ui::{MessageEditorEvent, StateChange, thread_worktree_archive};
@@ -5853,6 +5853,32 @@ impl Sidebar {
         }
     }
 
+    fn archive_thread_action(
+        &mut self,
+        action: &ArchiveThread,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session_id = acp::SessionId::new(action.session_id.clone());
+        let Some(status) = self.contents.entries.iter().find_map(|entry| match entry {
+            ListEntry::Thread(thread)
+                if thread.metadata.session_id.as_ref() == Some(&session_id) =>
+            {
+                Some(thread.status)
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+
+        match status {
+            AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation => return,
+            AgentThreadStatus::Completed | AgentThreadStatus::Error => {}
+        }
+
+        self.archive_thread(&session_id, window, cx);
+    }
+
     fn rename_selected_thread(
         &mut self,
         _: &RenameSelectedThread,
@@ -8082,6 +8108,7 @@ impl Render for Sidebar {
             .on_action(cx.listener(Self::unfold_all))
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::archive_selected_thread))
+            .on_action(cx.listener(Self::archive_thread_action))
             .on_action(cx.listener(Self::rename_selected_thread))
             .on_action(cx.listener(Self::new_thread_in_group))
             .on_action(cx.listener(Self::new_terminal_thread))

@@ -92,11 +92,11 @@ use crate::thread_metadata_store::{ThreadId, ThreadMetadataStore};
 use crate::ui::{AgentNotification, AgentNotificationEvent};
 use crate::{
     Agent, AgentDiffPane, AgentInitialContent, AgentPanel, AgentPanelEvent, AllowAlways, AllowOnce,
-    AuthorizeToolCall, ClearMessageQueue, CycleFavoriteModels, CycleModeSelector,
+    ArchiveThread, AuthorizeToolCall, ClearMessageQueue, CycleFavoriteModels, CycleModeSelector,
     CycleThinkingEffort, EditFirstQueuedMessage, ExpandMessageEditor, Follow, KeepAll,
     MergeThreadChanges, NewThread, OpenAddContextMenu, OpenAgentDiff, RejectAll, RejectOnce,
-    RemoveFirstQueuedMessage, ScrollOutputLineDown, ScrollOutputLineUp, ScrollOutputPageDown,
-    ScrollOutputPageUp, ScrollOutputToBottom, ScrollOutputToNextMessage,
+    RemoveFirstQueuedMessage, ReviewThreadBranchChanges, ScrollOutputLineDown, ScrollOutputLineUp,
+    ScrollOutputPageDown, ScrollOutputPageUp, ScrollOutputToBottom, ScrollOutputToNextMessage,
     ScrollOutputToPreviousMessage, ScrollOutputToTop, SendImmediately, SendNextQueuedMessage,
     ToggleFastMode, ToggleProfileSelector, ToggleThinkingEffortMenu, ToggleThinkingMode,
     UndoLastReject,

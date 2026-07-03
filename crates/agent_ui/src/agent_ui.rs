@@ -202,6 +202,8 @@ actions!(
         ArchiveSelectedThread,
         /// Merges linked worktree changes from the current thread into the main worktree branch.
         MergeThreadChanges,
+        /// Opens a diff of the current thread's linked-worktree branch against its merge target.
+        ReviewThreadBranchChanges,
         /// Removes the currently selected thread.
         RemoveSelectedThread,
         /// Renames the currently selected thread.
@@ -310,6 +312,15 @@ actions!(
         ShowAllSidebarThreadMetadata,
     ]
 );
+
+/// Archives a thread by session id.
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = agent)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveThread {
+    /// The session id of the thread to archive.
+    pub session_id: String,
+}
 
 /// Action to authorize a tool call with a specific permission option.
 /// This is used by the permission granularity dropdown to authorize tool calls.

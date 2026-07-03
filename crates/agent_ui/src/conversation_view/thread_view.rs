@@ -18,6 +18,8 @@ use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
 use git::repository::{MergeWorktreeIntoBaseResult, MergeWorktreeIntoBaseResultKind};
+use git_ui::project_diff::ProjectDiff;
+use notifications::status_toast::StatusToast;
 
 use crate::completion_provider::AvailableSkill;
 use crate::message_editor::SharedSessionCapabilities;
@@ -36,7 +38,7 @@ use ui::{
     ButtonLike, CalloutBorderPosition, SpinnerLabel, SpinnerVariant, SplitButton, SplitButtonStyle,
     Tab,
 };
-use workspace::notifications::NotificationId;
+use workspace::notifications::{NotificationId, NotifyTaskExt};
 use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
 
 use super::*;
@@ -738,27 +740,50 @@ pub fn open_markdown_in_workspace(
     })
 }
 
-fn format_merge_thread_changes_result(results: Vec<MergeWorktreeIntoBaseResult>) -> String {
+struct MergeThreadChangesSummary {
+    message: String,
+    offer_archive: bool,
+}
+
+fn summarize_merge_thread_changes_result(
+    results: Vec<MergeWorktreeIntoBaseResult>,
+) -> MergeThreadChangesSummary {
     match results.as_slice() {
-        [] => "No linked git worktree found for this thread".to_string(),
+        [] => MergeThreadChangesSummary {
+            message: "No linked git worktree found for this thread".to_string(),
+            offer_archive: false,
+        },
         [result] => {
             let checkpoint = if result.auto_committed {
                 " after checkpointing uncommitted changes"
             } else {
                 ""
             };
-            match result.kind {
-                MergeWorktreeIntoBaseResultKind::FastForward => format!(
-                    "Merged thread changes into {} with a fast-forward{}",
-                    result.target_branch_name, checkpoint
-                ),
-                MergeWorktreeIntoBaseResultKind::MergeCommit => format!(
-                    "Merged thread changes into {}{}",
-                    result.target_branch_name, checkpoint
-                ),
+            let message = match result.kind {
+                MergeWorktreeIntoBaseResultKind::FastForward => {
+                    format!(
+                        "Merged thread changes into {} with a fast-forward{}",
+                        result.target_branch_name, checkpoint
+                    )
+                }
+                MergeWorktreeIntoBaseResultKind::MergeCommit => {
+                    format!(
+                        "Merged thread changes into {}{}",
+                        result.target_branch_name, checkpoint
+                    )
+                }
                 MergeWorktreeIntoBaseResultKind::AlreadyUpToDate => {
                     format!("Nothing to merge into {}", result.target_branch_name)
                 }
+            };
+            let offer_archive = matches!(
+                result.kind,
+                MergeWorktreeIntoBaseResultKind::FastForward
+                    | MergeWorktreeIntoBaseResultKind::MergeCommit
+            );
+            MergeThreadChangesSummary {
+                message,
+                offer_archive,
             }
         }
         results => {
@@ -771,13 +796,17 @@ fn format_merge_thread_changes_result(results: Vec<MergeWorktreeIntoBaseResult>)
                     )
                 })
                 .count();
-            if merged_count == 0 {
+            let message = if merged_count == 0 {
                 format!("Nothing to merge in {} repositories", results.len())
             } else {
                 format!(
                     "Merged thread changes in {merged_count}/{} repositories",
                     results.len()
                 )
+            };
+            MergeThreadChangesSummary {
+                message,
+                offer_archive: merged_count > 0,
             }
         }
     }
@@ -2639,6 +2668,23 @@ impl ThreadView {
             .unwrap_or_default()
     }
 
+    fn thread_worktree_review_target(
+        &self,
+        cx: &App,
+    ) -> Option<git_ui::worktree_service::ThreadWorktreeMergeTarget> {
+        let project = self.project.upgrade()?;
+        let targets = git_ui::worktree_service::thread_worktree_merge_targets(project.read(cx), cx);
+        let active_repository = project.read(cx).active_repository(cx);
+        if let Some(active_repository) = active_repository
+            && let Some(target) = targets
+                .iter()
+                .find(|target| target.repository == active_repository)
+        {
+            return Some(target.clone());
+        }
+        targets.into_iter().next()
+    }
+
     fn merge_thread_changes_button_label(&self, cx: &App) -> Option<String> {
         let targets = self.thread_worktree_merge_targets(cx);
         match targets.as_slice() {
@@ -2667,6 +2713,64 @@ impl ThreadView {
         }
     }
 
+    fn review_thread_branch_changes(
+        &mut self,
+        _: &ReviewThreadBranchChanges,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let Some(project) = self.project.upgrade() else {
+            return;
+        };
+        let Some(target) = self.thread_worktree_review_target(cx) else {
+            self.show_merge_thread_changes_toast(
+                "No linked git worktree found for this thread".to_string(),
+                false,
+                None,
+                cx,
+            );
+            return;
+        };
+
+        let repository = target.repository;
+        if let Some(base_ref) = target.target_branch_name {
+            workspace.update(cx, |workspace, cx| {
+                ProjectDiff::deploy_branch_diff_with_base_ref(
+                    workspace,
+                    project,
+                    repository,
+                    SharedString::from(base_ref),
+                    window,
+                    cx,
+                );
+            });
+            return;
+        }
+
+        let default_branch =
+            repository.update(cx, |repository, _cx| repository.default_branch(true));
+        let workspace_weak = workspace.downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let base_ref = default_branch
+                    .await
+                    .map_err(|_| anyhow::anyhow!("default branch request was canceled"))??
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine default branch"))?;
+
+                workspace.update_in(cx, |workspace, window, cx| {
+                    ProjectDiff::deploy_branch_diff_with_base_ref(
+                        workspace, project, repository, base_ref, window, cx,
+                    );
+                })?;
+
+                anyhow::Ok(())
+            })
+            .detach_and_notify_err(workspace_weak, window, cx);
+    }
+
     fn merge_thread_changes(
         &mut self,
         _: &MergeThreadChanges,
@@ -2681,22 +2785,25 @@ impl ThreadView {
         if targets.is_empty() {
             self.show_merge_thread_changes_toast(
                 "No linked git worktree found for this thread".to_string(),
+                false,
+                None,
                 cx,
             );
             return;
         }
 
+        let session_id = self.thread.read(cx).session_id().0.to_string();
         self.merge_thread_changes_task = Some(cx.spawn(async move |this, cx| {
             let result = git_ui::worktree_service::merge_thread_worktrees_into_base(targets, cx)
                 .await
-                .map(format_merge_thread_changes_result);
+                .map(summarize_merge_thread_changes_result);
             if let Err(error) = this.update(cx, |this, cx| {
                 this.merge_thread_changes_task = None;
-                let message = match result {
-                    Ok(message) => message,
-                    Err(error) => format!("Merge failed: {error:#}"),
+                let (message, offer_archive) = match result {
+                    Ok(summary) => (summary.message, summary.offer_archive),
+                    Err(error) => (format!("Merge failed: {error:#}"), false),
                 };
-                this.show_merge_thread_changes_toast(message, cx);
+                this.show_merge_thread_changes_toast(message, offer_archive, Some(session_id), cx);
                 cx.notify();
             }) {
                 log::error!("failed to update thread view after merging thread changes: {error:#}");
@@ -2705,15 +2812,56 @@ impl ThreadView {
         cx.notify();
     }
 
-    fn show_merge_thread_changes_toast(&self, message: String, cx: &mut Context<Self>) {
+    fn show_merge_thread_changes_toast(
+        &self,
+        message: String,
+        offer_archive: bool,
+        session_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.update(cx, |workspace, cx| {
-                struct MergeThreadChangesToast;
-                workspace.show_toast(
-                    Toast::new(NotificationId::unique::<MergeThreadChangesToast>(), message)
-                        .autohide(),
-                    cx,
-                );
+                if let (true, Some(session_id)) = (offer_archive, session_id) {
+                    let toast = StatusToast::new(message, cx, |this, _cx| {
+                        this.icon(
+                            Icon::new(IconName::Check)
+                                .size(IconSize::Small)
+                                .color(Color::Success),
+                        )
+                        .action("Archive Thread", move |window, cx| {
+                            if let Some(sidebar_focus_handle) = window
+                                .root::<MultiWorkspace>()
+                                .flatten()
+                                .and_then(|multi_workspace| {
+                                    multi_workspace
+                                        .read(cx)
+                                        .sidebar()
+                                        .map(|sidebar| sidebar.focus_handle(cx))
+                                })
+                            {
+                                sidebar_focus_handle.dispatch_action(
+                                    &ArchiveThread {
+                                        session_id: session_id.clone(),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            } else {
+                                log::warn!(
+                                    "could not find sidebar to archive merged thread from toast"
+                                );
+                            }
+                        })
+                    });
+                    workspace.toggle_status_toast(toast, cx);
+                } else {
+                    struct MergeThreadChangesToast;
+                    workspace.show_toast(
+                        Toast::new(NotificationId::unique::<MergeThreadChangesToast>(), message)
+                            .autohide(),
+                        cx,
+                    );
+                }
             });
         }
     }
@@ -6168,6 +6316,31 @@ impl ThreadView {
             }));
 
         let is_merging_thread_changes = self.merge_thread_changes_task.is_some();
+        let review_thread_branch_changes_button =
+            self.thread_worktree_review_target(cx).map(|_| {
+                Button::new("review-thread-branch-changes", "Review Changes")
+                    .label_size(LabelSize::Small)
+                    .style(ButtonStyle::Subtle)
+                    .start_icon(
+                        Icon::new(IconName::ListTodo)
+                            .size(IconSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .tooltip({
+                        let focus_handle = self.focus_handle.clone();
+                        move |_window, cx| {
+                            Tooltip::for_action_in(
+                                "Review Changes",
+                                &ReviewThreadBranchChanges,
+                                &focus_handle,
+                                cx,
+                            )
+                        }
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.review_thread_branch_changes(&ReviewThreadBranchChanges, window, cx);
+                    }))
+            });
         let merge_thread_changes_button = self.merge_thread_changes_button_label(cx).map(|label| {
             Button::new(
                 "merge-thread-changes",
@@ -6341,6 +6514,9 @@ impl ThreadView {
         }
 
         container
+            .when_some(review_thread_branch_changes_button, |this, button| {
+                this.child(button)
+            })
             .when_some(merge_thread_changes_button, |this, button| {
                 this.child(button)
             })
@@ -11278,6 +11454,7 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::scroll_output_to_previous_message))
             .on_action(cx.listener(Self::scroll_output_to_next_message))
             .on_action(cx.listener(Self::toggle_search))
+            .on_action(cx.listener(Self::review_thread_branch_changes))
             .on_action(cx.listener(Self::merge_thread_changes))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
