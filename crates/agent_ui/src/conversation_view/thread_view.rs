@@ -613,6 +613,8 @@ pub struct ThreadView {
     pub _subscriptions: Vec<Subscription>,
     pub message_editor: Entity<MessageEditor>,
     pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
+    pub parallel_attempts_menu_handle: PopoverMenuHandle<ContextMenu>,
+    pub parallel_attempts_task: Option<Task<()>>,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
@@ -1066,6 +1068,8 @@ impl ThreadView {
             in_flight_prompt: None,
             message_editor,
             add_context_menu_handle: PopoverMenuHandle::default(),
+            parallel_attempts_menu_handle: PopoverMenuHandle::default(),
+            parallel_attempts_task: None,
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
@@ -1471,6 +1475,133 @@ impl ThreadView {
             self.show_external_source_prompt_warning = false;
             cx.notify();
         }
+    }
+
+    fn has_user_submitted_prompt(&self, cx: &App) -> bool {
+        self.thread
+            .read(cx)
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
+    }
+
+    fn project_has_git_repository(&self, cx: &App) -> bool {
+        self.project
+            .upgrade()
+            .is_some_and(|project| !project.read(cx).repositories(cx).is_empty())
+    }
+
+    fn can_send_parallel_attempts(&self, cx: &App) -> bool {
+        self.parallel_attempts_task.is_none()
+            && !self.is_loading_contents
+            && self.thread.read(cx).status() == ThreadStatus::Idle
+            && !self.has_user_submitted_prompt(cx)
+            && !self.message_editor.read(cx).is_empty(cx)
+            && self.project_has_git_repository(cx)
+            && self.as_native_connection(cx).is_some()
+    }
+
+    fn send_parallel_attempts(
+        &mut self,
+        action: &SendParallelAttempts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_send_parallel_attempts(cx) {
+            if !self.project_has_git_repository(cx) {
+                self.show_parallel_attempts_toast(
+                    "Parallel attempts need a git repository in the project".to_string(),
+                    cx,
+                );
+            }
+            return;
+        }
+
+        let count = action.count.clamp(2, 4);
+        let prompt = self.message_editor.read(cx).text(cx);
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return;
+        }
+
+        let Some(connection) = self.as_native_connection(cx) else {
+            self.show_parallel_attempts_toast(
+                "Parallel attempts are only available for native agent threads".to_string(),
+                cx,
+            );
+            return;
+        };
+        let Some(host) = connection.0.read(cx).sibling_thread_host() else {
+            self.show_parallel_attempts_toast(
+                "Parallel attempts are not available in this workspace".to_string(),
+                cx,
+            );
+            return;
+        };
+
+        let run_identifier = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>();
+        let requests =
+            parallel_attempt_requests(prompt, count, self.current_model_id(cx), &run_identifier);
+        let message_editor = self.message_editor.clone();
+        let window_handle = window.window_handle();
+
+        self.parallel_attempts_task = Some(cx.spawn(async move |this, cx| {
+            let total_count = requests.len();
+            let mut started_count = 0;
+            let mut error = None;
+
+            for request in requests {
+                match host.create_sibling_thread(request, cx).await {
+                    Ok(_) => started_count += 1,
+                    Err(err) => {
+                        error = Some(format!("{err:#}"));
+                        break;
+                    }
+                }
+            }
+
+            let updated = window_handle.update(cx, |_root, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.parallel_attempts_task = None;
+                    if error.is_none() && started_count == total_count {
+                        message_editor.update(cx, |message_editor, cx| {
+                            message_editor.clear(window, cx);
+                        });
+                        this.clear_external_source_prompt_warning(cx);
+                        this.show_parallel_attempts_toast(
+                            format!("Started {started_count} parallel attempts"),
+                            cx,
+                        );
+                    } else {
+                        let message = match error {
+                            Some(error) if started_count == 0 => {
+                                format!("Failed to start parallel attempts: {error}")
+                            }
+                            Some(error) => {
+                                format!(
+                                    "Started {started_count}/{total_count} parallel attempts; failed: {error}"
+                                )
+                            }
+                            None => format!(
+                                "Started {started_count}/{total_count} parallel attempts"
+                            ),
+                        };
+                        this.show_parallel_attempts_toast(message, cx);
+                    }
+                    cx.notify();
+                })
+            });
+
+            if let Err(error) = updated.and_then(|inner| inner) {
+                log::error!("failed to update thread view after parallel attempts: {error:#}");
+            }
+        }));
+        cx.notify();
     }
 
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2962,6 +3093,19 @@ impl ThreadView {
                         message,
                     )
                     .autohide(),
+                    cx,
+                );
+            });
+        }
+    }
+
+    fn show_parallel_attempts_toast(&self, message: String, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                struct ParallelAttemptsToast;
+                workspace.show_toast(
+                    Toast::new(NotificationId::unique::<ParallelAttemptsToast>(), message)
+                        .autohide(),
                     cx,
                 );
             });
@@ -5363,10 +5507,53 @@ impl ThreadView {
             .anchor(gpui::Anchor::BottomLeft)
     }
 
+    fn render_parallel_attempts_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let focus_handle = self.message_editor.focus_handle(cx);
+
+        PopoverMenu::new("parallel-attempts-menu")
+            .trigger_with_tooltip(
+                IconButton::new("parallel-attempts", IconName::GitBranch)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted),
+                Tooltip::text("Send Parallel Attempts"),
+            )
+            .anchor(gpui::Anchor::BottomRight)
+            .with_handle(self.parallel_attempts_menu_handle.clone())
+            .offset(gpui::Point {
+                x: px(0.0),
+                y: px(-2.0),
+            })
+            .menu(move |window, cx| {
+                let focus_handle = focus_handle.clone();
+                Some(ContextMenu::build(
+                    window,
+                    cx,
+                    move |mut menu, _window, _cx| {
+                        menu = menu.context(focus_handle);
+
+                        for count in 2..=4 {
+                            menu.push_item(
+                                ContextMenuEntry::new(format!("Send {count} Parallel Attempts"))
+                                    .handler(move |window, cx| {
+                                        window.dispatch_action(
+                                            Box::new(SendParallelAttempts { count }),
+                                            cx,
+                                        );
+                                    }),
+                            );
+                        }
+
+                        menu
+                    },
+                ))
+            })
+    }
+
     fn render_send_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let message_editor = self.message_editor.read(cx);
-        let is_editor_empty = message_editor.is_empty(cx);
-        let focus_handle = message_editor.focus_handle(cx);
+        let (is_editor_empty, focus_handle) = {
+            let message_editor = self.message_editor.read(cx);
+            (message_editor.is_empty(cx), message_editor.focus_handle(cx))
+        };
 
         let is_generating = self.thread.read(cx).status() != ThreadStatus::Idle;
 
@@ -5392,7 +5579,7 @@ impl ThreadView {
             } else {
                 IconName::Send
             };
-            IconButton::new("send-message", send_icon)
+            let send_button = IconButton::new("send-message", send_icon)
                 .style(ButtonStyle::Filled)
                 .map(|this| {
                     if is_editor_empty && !is_generating {
@@ -5439,8 +5626,17 @@ impl ThreadView {
                 })
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.send(window, cx);
-                }))
-                .into_any_element()
+                }));
+
+            if self.can_send_parallel_attempts(cx) {
+                h_flex()
+                    .gap_0p5()
+                    .child(self.render_parallel_attempts_menu(cx))
+                    .child(send_button)
+                    .into_any_element()
+            } else {
+                send_button.into_any_element()
+            }
         }
     }
 
@@ -11598,6 +11794,7 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::review_thread_branch_changes))
             .on_action(cx.listener(Self::create_thread_pull_request))
             .on_action(cx.listener(Self::merge_thread_changes))
+            .on_action(cx.listener(Self::send_parallel_attempts))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
             }))
@@ -11939,6 +12136,81 @@ fn strip_leading_command(text: &str, command_name: &str) -> String {
         .unwrap_or_else(|| trimmed.to_string())
 }
 
+const PARALLEL_ATTEMPT_TITLE_WORD_LIMIT: usize = 10;
+const PARALLEL_ATTEMPT_TITLE_CHAR_LIMIT: usize = 80;
+const PARALLEL_ATTEMPT_WORKTREE_PREFIX_LIMIT: usize = 40;
+
+fn parallel_attempt_requests(
+    prompt: &str,
+    count: usize,
+    model: Option<String>,
+    run_identifier: &str,
+) -> Vec<agent::SiblingThreadRequest> {
+    let count = count.clamp(2, 4);
+    (1..=count)
+        .map(|attempt| agent::SiblingThreadRequest {
+            title: parallel_attempt_title(prompt, attempt, count).into(),
+            prompt: prompt.to_string(),
+            agent_id: None,
+            model: model.clone(),
+            use_new_worktree: true,
+            worktree_name: Some(parallel_attempt_worktree_name(
+                prompt,
+                attempt,
+                count,
+                run_identifier,
+            )),
+            base_ref: None,
+        })
+        .collect()
+}
+
+fn parallel_attempt_title(prompt: &str, attempt: usize, count: usize) -> String {
+    let prefix = prompt
+        .split_whitespace()
+        .take(PARALLEL_ATTEMPT_TITLE_WORD_LIMIT)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let prefix = if prefix.is_empty() {
+        DEFAULT_THREAD_TITLE.to_string()
+    } else {
+        util::truncate_and_trailoff(&prefix, PARALLEL_ATTEMPT_TITLE_CHAR_LIMIT)
+    };
+    format!("{prefix} - attempt {attempt}/{count}")
+}
+
+fn parallel_attempt_worktree_name(
+    prompt: &str,
+    attempt: usize,
+    count: usize,
+    run_identifier: &str,
+) -> String {
+    let mut base_name = String::new();
+    let mut pending_separator = false;
+
+    for character in prompt.chars() {
+        if character.is_ascii_alphanumeric() {
+            if pending_separator && !base_name.is_empty() {
+                base_name.push('-');
+            }
+            base_name.push(character.to_ascii_lowercase());
+            pending_separator = false;
+        } else if !base_name.is_empty() {
+            pending_separator = true;
+        }
+
+        if base_name.len() >= PARALLEL_ATTEMPT_WORKTREE_PREFIX_LIMIT {
+            break;
+        }
+    }
+
+    if base_name.is_empty() {
+        base_name = "parallel-attempt".to_string();
+    }
+
+    format!("{base_name}-{run_identifier}-attempt-{attempt}-of-{count}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12005,6 +12277,107 @@ mod tests {
         );
         // No matching prefix: returns the trimmed input unchanged.
         assert_eq!(strip_leading_command("hello", "compact"), "hello");
+    }
+
+    #[test]
+    fn test_parallel_attempt_title_uses_prompt_words_and_suffix() {
+        assert_eq!(
+            parallel_attempt_title("Build a calendar view with drag and drop", 2, 3),
+            "Build a calendar view with drag and drop - attempt 2/3"
+        );
+        assert_eq!(
+            parallel_attempt_title("   \n\t", 1, 2),
+            "New Agent Thread - attempt 1/2"
+        );
+    }
+
+    #[test]
+    fn test_parallel_attempt_worktree_name_is_unique_and_sanitized() {
+        let names = (1..=4)
+            .map(|attempt| {
+                parallel_attempt_worktree_name(
+                    "Build a Calendar: drag & drop!",
+                    attempt,
+                    4,
+                    "run123",
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "build-a-calendar-drag-drop-run123-attempt-1-of-4".to_string(),
+                "build-a-calendar-drag-drop-run123-attempt-2-of-4".to_string(),
+                "build-a-calendar-drag-drop-run123-attempt-3-of-4".to_string(),
+                "build-a-calendar-drag-drop-run123-attempt-4-of-4".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parallel_attempt_requests_clamp_count_and_reuse_prompt() {
+        let requests = parallel_attempt_requests(
+            "Fix the project panel crash",
+            8,
+            Some("provider/model".to_string()),
+            "run123",
+        );
+
+        let titles = requests
+            .iter()
+            .map(|request| request.title.to_string())
+            .collect::<Vec<_>>();
+        let worktree_names = requests
+            .iter()
+            .filter_map(|request| request.worktree_name.clone())
+            .collect::<Vec<_>>();
+        let prompts = requests
+            .iter()
+            .map(|request| request.prompt.as_str())
+            .collect::<Vec<_>>();
+        let models = requests
+            .iter()
+            .filter_map(|request| request.model.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            titles,
+            vec![
+                "Fix the project panel crash - attempt 1/4".to_string(),
+                "Fix the project panel crash - attempt 2/4".to_string(),
+                "Fix the project panel crash - attempt 3/4".to_string(),
+                "Fix the project panel crash - attempt 4/4".to_string(),
+            ]
+        );
+        assert_eq!(
+            worktree_names,
+            vec![
+                "fix-the-project-panel-crash-run123-attempt-1-of-4".to_string(),
+                "fix-the-project-panel-crash-run123-attempt-2-of-4".to_string(),
+                "fix-the-project-panel-crash-run123-attempt-3-of-4".to_string(),
+                "fix-the-project-panel-crash-run123-attempt-4-of-4".to_string(),
+            ]
+        );
+        assert_eq!(
+            prompts,
+            vec![
+                "Fix the project panel crash",
+                "Fix the project panel crash",
+                "Fix the project panel crash",
+                "Fix the project panel crash",
+            ]
+        );
+        assert_eq!(
+            models,
+            vec![
+                "provider/model".to_string(),
+                "provider/model".to_string(),
+                "provider/model".to_string(),
+                "provider/model".to_string(),
+            ]
+        );
     }
 
     #[gpui::test]

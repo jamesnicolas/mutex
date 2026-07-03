@@ -98,8 +98,9 @@ use crate::{
     OpenAgentDiff, RejectAll, RejectOnce, RemoveFirstQueuedMessage, ReviewThreadBranchChanges,
     ScrollOutputLineDown, ScrollOutputLineUp, ScrollOutputPageDown, ScrollOutputPageUp,
     ScrollOutputToBottom, ScrollOutputToNextMessage, ScrollOutputToPreviousMessage,
-    ScrollOutputToTop, SendImmediately, SendNextQueuedMessage, ToggleFastMode,
-    ToggleProfileSelector, ToggleThinkingEffortMenu, ToggleThinkingMode, UndoLastReject,
+    ScrollOutputToTop, SendImmediately, SendNextQueuedMessage, SendParallelAttempts,
+    ToggleFastMode, ToggleProfileSelector, ToggleThinkingEffortMenu, ToggleThinkingMode,
+    UndoLastReject,
 };
 
 const STOPWATCH_THRESHOLD: Duration = Duration::from_secs(30);
