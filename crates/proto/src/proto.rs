@@ -298,6 +298,8 @@ messages!(
     (GitCommitDetails, Background),
     (GitCreateCheckpoint, Background),
     (GitCreateCheckpointResponse, Background),
+    (GitCheckpointWorktreeChanges, Background),
+    (GitCheckpointWorktreeChangesResponse, Background),
     (GitCreateArchiveCheckpoint, Background),
     (GitCreateArchiveCheckpointResponse, Background),
     (GitRestoreCheckpoint, Background),
@@ -542,6 +544,10 @@ request_messages!(
     (RegisterBufferWithLanguageServers, Ack),
     (GitShow, GitCommitDetails),
     (GitCreateCheckpoint, GitCreateCheckpointResponse),
+    (
+        GitCheckpointWorktreeChanges,
+        GitCheckpointWorktreeChangesResponse
+    ),
     (
         GitCreateArchiveCheckpoint,
         GitCreateArchiveCheckpointResponse
@@ -794,6 +800,7 @@ entity_messages!(
     GitRestoreArchiveCheckpoint,
     GitCreateWorktree,
     GitMergeWorktreeIntoBase,
+    GitCheckpointWorktreeChanges,
     GitRemoveWorktree,
     GitRenameWorktree,
     GitWorktreeCreatedAt,

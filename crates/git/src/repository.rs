@@ -915,6 +915,8 @@ pub trait GitRepository: Send + Sync {
         create: bool,
     ) -> BoxFuture<'_, Result<()>>;
 
+    fn checkpoint_worktree_changes(&self, message: String) -> BoxFuture<'_, Result<bool>>;
+
     fn merge_worktree_into_base(&self) -> BoxFuture<'_, Result<MergeWorktreeIntoBaseResult>>;
 
     fn remove_worktree(&self, path: PathBuf, force: bool) -> BoxFuture<'_, Result<()>>;
@@ -2123,6 +2125,23 @@ impl GitRepository for RealGitRepository {
                     git_binary.run(&["checkout", &branch_name]).await?;
                 }
                 anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn checkpoint_worktree_changes(&self, message: String) -> BoxFuture<'_, Result<bool>> {
+        let git = self.git_binary_in_worktree();
+
+        self.executor
+            .spawn(async move {
+                let git = git?;
+                checkpoint_worktree_changes_with_git(
+                    &git,
+                    &message,
+                    "failed to stage thread worktree changes before checkpoint",
+                    "git commit failed while checkpointing thread worktree changes",
+                )
+                .await
             })
             .boxed()
     }
@@ -3926,7 +3945,13 @@ async fn merge_worktree_into_base_with_git(
     }
     let main_has_uncommitted_changes = git_has_uncommitted_changes(&main_git).await?;
 
-    let auto_committed = auto_commit_worktree_changes(&source_git).await?;
+    let auto_committed = checkpoint_worktree_changes_with_git(
+        &source_git,
+        "Checkpoint thread changes before merge",
+        "failed to stage thread worktree changes before merge",
+        "git commit failed while checkpointing thread worktree changes",
+    )
+    .await?;
     let source_branch_name = git_current_branch_name(&source_git)
         .await?
         .filter(|branch_name| !branch_name.is_empty());
@@ -3997,14 +4022,19 @@ async fn git_has_uncommitted_changes(git: &GitBinary) -> Result<bool> {
     Ok(!status.is_empty())
 }
 
-async fn auto_commit_worktree_changes(git: &GitBinary) -> Result<bool> {
+async fn checkpoint_worktree_changes_with_git(
+    git: &GitBinary,
+    message: &str,
+    stage_error_context: &'static str,
+    commit_error_context: &'static str,
+) -> Result<bool> {
     if !git_has_uncommitted_changes(git).await? {
         return Ok(false);
     }
 
     git.run(&["add", "--all"])
         .await
-        .context("failed to stage thread worktree changes before merge")?;
+        .context(stage_error_context)?;
 
     if !git_has_staged_changes(git).await? {
         return Ok(false);
@@ -4014,17 +4044,14 @@ async fn auto_commit_worktree_changes(git: &GitBinary) -> Result<bool> {
         "commit",
         "--quiet",
         "-m",
-        "Checkpoint thread changes before merge",
+        message,
         "--cleanup=strip",
         "--no-verify",
     ]);
     command.envs(checkpoint_author_envs());
     let output = command.output().await?;
     if !output.status.success() {
-        return Err(git_command_error(
-            "git commit failed while checkpointing thread worktree changes",
-            &output,
-        ));
+        return Err(git_command_error(commit_error_context, &output));
     }
 
     Ok(true)
@@ -5085,7 +5112,7 @@ mod tests {
     #[test]
     fn test_branches_parsing_containing_refs_with_missing_fields() {
         #[allow(clippy::octal_escapes)]
-        let input = " \090012116c03db04344ab10d50348553aa94f1ea0\0refs/heads/broken\n \0eb0cae33272689bd11030822939dd2701c52f81e\0895951d681e5561478c0acdd6905e8aacdfd2249\0refs/heads/dev\0\0\01762948725\0Zed\0Add feature\n*\0895951d681e5561478c0acdd6905e8aacdfd2249\0\0refs/heads/main\0\0\01762948695\0Zed\0Initial commit\n";
+        let input = " \090012116c03db04344ab10d50348553aa94f1ea0\0refs/heads/broken\n \0eb0cae33272689bd11030822939dd2701c52f81e\0895951d681e5561478c0acdd6905e8aacdfd2249\0refs/heads/dev\0\0\01762948725\0Mutex\0Add feature\n*\0895951d681e5561478c0acdd6905e8aacdfd2249\0\0refs/heads/main\0\0\01762948695\0Mutex\0Initial commit\n";
 
         let branches = parse_branch_input(input).unwrap();
         assert_eq!(branches.len(), 2);
@@ -5603,6 +5630,132 @@ mod tests {
             String::from_utf8(message.stdout).unwrap().trim(),
             "Checkpoint thread changes before merge"
         );
+        let status = git_output(&worktree_path, ["status", "--porcelain=v1"]);
+        assert!(status.status.success());
+        assert!(String::from_utf8(status.stdout).unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_checkpoint_worktree_changes_commits_dirty_worktree(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "file.txt", "base", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        let head_before = git_output(&worktree_path, ["rev-parse", "HEAD"]);
+        assert!(head_before.status.success());
+        let head_before = String::from_utf8(head_before.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        fs::write(worktree_path.join("file.txt"), "dirty").unwrap();
+        fs::write(worktree_path.join("staged.txt"), "staged").unwrap();
+        git_command(&worktree_path, ["add", "staged.txt"]);
+        fs::write(worktree_path.join("untracked.txt"), "untracked").unwrap();
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let checkpoint_created = worktree_repo
+            .checkpoint_worktree_changes(
+                "Checkpoint thread changes before creating pull request".to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert!(checkpoint_created);
+        let head_after = git_output(&worktree_path, ["rev-parse", "HEAD"]);
+        assert!(head_after.status.success());
+        let head_after = String::from_utf8(head_after.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_ne!(head_before, head_after);
+        assert_eq!(
+            fs::read_to_string(worktree_path.join("file.txt")).unwrap(),
+            "dirty"
+        );
+        assert_eq!(
+            fs::read_to_string(worktree_path.join("staged.txt")).unwrap(),
+            "staged"
+        );
+        assert_eq!(
+            fs::read_to_string(worktree_path.join("untracked.txt")).unwrap(),
+            "untracked"
+        );
+
+        let message = git_output(&worktree_path, ["log", "-1", "--pretty=%B"]);
+        assert!(message.status.success());
+        assert_eq!(
+            String::from_utf8(message.stdout).unwrap().trim(),
+            "Checkpoint thread changes before creating pull request"
+        );
+        let status = git_output(&worktree_path, ["status", "--porcelain=v1"]);
+        assert!(status.status.success());
+        assert!(String::from_utf8(status.stdout).unwrap().is_empty());
+    }
+
+    #[gpui::test]
+    async fn test_checkpoint_worktree_changes_skips_clean_worktree(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "file.txt", "base", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        let head_before = git_output(&worktree_path, ["rev-parse", "HEAD"]);
+        assert!(head_before.status.success());
+        let head_before = String::from_utf8(head_before.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let checkpoint_created = worktree_repo
+            .checkpoint_worktree_changes(
+                "Checkpoint thread changes before creating pull request".to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!checkpoint_created);
+        let head_after = git_output(&worktree_path, ["rev-parse", "HEAD"]);
+        assert!(head_after.status.success());
+        let head_after = String::from_utf8(head_after.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(head_before, head_after);
         let status = git_output(&worktree_path, ["status", "--porcelain=v1"]);
         assert!(status.status.success());
         assert!(String::from_utf8(status.stdout).unwrap().is_empty());

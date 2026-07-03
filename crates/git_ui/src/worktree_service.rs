@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow};
 use askpass::AskPassDelegate;
 use collections::HashSet;
 use fs::Fs;
@@ -23,7 +23,10 @@ use workspace::{
 };
 use zed_actions::NewWorktreeBranchTarget;
 
-use git::repository::{FetchOptions, Remote};
+use git::{
+    GitHostingProviderRegistry, parse_git_remote_url,
+    repository::{FetchOptions, PushOptions, Remote},
+};
 
 use util::ResultExt as _;
 
@@ -360,6 +363,12 @@ pub struct ThreadWorktreeMergeTarget {
     pub target_branch_name: Option<String>,
 }
 
+pub struct ThreadWorktreePullRequest {
+    pub branch_name: String,
+    pub url: String,
+    pub checkpoint_created: bool,
+}
+
 pub fn thread_worktree_merge_targets(
     project: &Project,
     cx: &gpui::App,
@@ -407,6 +416,96 @@ pub async fn merge_thread_worktrees_into_base(
     Ok(results)
 }
 
+pub async fn create_pull_request_for_thread_worktree(
+    target: ThreadWorktreeMergeTarget,
+    askpass: AskPassDelegate,
+    cx: &mut gpui::AsyncApp,
+) -> anyhow::Result<ThreadWorktreePullRequest> {
+    let checkpoint_receiver = target.repository.update(cx, |repository, _cx| {
+        repository.checkpoint_worktree_changes(
+            "Checkpoint thread changes before creating pull request".to_string(),
+        )
+    });
+    let checkpoint_created = checkpoint_receiver
+        .await
+        .map_err(|_| anyhow!("checkpoint thread changes operation was canceled"))?
+        .context("failed to checkpoint thread worktree changes")?;
+
+    let (branch_name, remote_name, remote_url) =
+        target.repository.read_with(cx, |repository, _cx| {
+            let snapshot = repository.snapshot();
+            let branch = snapshot.branch.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "cannot create a pull request because the thread worktree is in detached HEAD state"
+                )
+            })?;
+            let branch_name = branch.name().to_string();
+            if branch_name.is_empty() {
+                anyhow::bail!(
+                    "cannot create a pull request because the thread worktree is in detached HEAD state"
+                );
+            }
+
+            let remote_origin_url = snapshot.remote_origin_url.clone();
+            let remote_upstream_url = snapshot.remote_upstream_url.clone();
+            let upstream_remote_name = branch
+                .upstream
+                .as_ref()
+                .and_then(|upstream| upstream.remote_name());
+            let selected_remote = match upstream_remote_name {
+                Some("upstream") => remote_upstream_url
+                    .clone()
+                    .map(|url| ("upstream".to_string(), url)),
+                Some("origin") => remote_origin_url
+                    .clone()
+                    .map(|url| ("origin".to_string(), url)),
+                _ => None,
+            }
+            .or_else(|| {
+                remote_origin_url
+                    .clone()
+                    .map(|url| ("origin".to_string(), url))
+            })
+            .or_else(|| remote_upstream_url.map(|url| ("upstream".to_string(), url)))
+            .ok_or_else(|| anyhow!("No remote configured for repository"))?;
+
+            anyhow::Ok((branch_name, selected_remote.0, selected_remote.1))
+        })?;
+
+    let push_receiver = target.repository.update(cx, |repository, cx| {
+        repository.push(
+            branch_name.clone().into(),
+            branch_name.clone().into(),
+            remote_name.clone().into(),
+            Some(PushOptions::SetUpstream),
+            askpass,
+            cx,
+        )
+    });
+    push_receiver
+        .await
+        .map_err(|_| anyhow!("push thread branch operation was canceled"))?
+        .with_context(|| format!("failed to push {branch_name} to {remote_name}"))?;
+
+    let url = cx.update(|cx| {
+        let provider_registry = GitHostingProviderRegistry::global(cx);
+        let Some((provider, parsed_remote)) = parse_git_remote_url(provider_registry, &remote_url)
+        else {
+            return Err(anyhow!("Unsupported remote URL: {remote_url}"));
+        };
+        let Some(url) = provider.build_create_pull_request_url(&parsed_remote, &branch_name) else {
+            return Err(anyhow!("Unable to construct pull request URL"));
+        };
+        anyhow::Ok(url.to_string())
+    })?;
+
+    Ok(ThreadWorktreePullRequest {
+        branch_name,
+        url,
+        checkpoint_created,
+    })
+}
+
 /// Resolves a branch target into the ref the new worktree should be based on.
 /// Returns `None` for `CurrentBranch`, meaning "use the current HEAD".
 pub fn resolve_worktree_branch_target(branch_target: &NewWorktreeBranchTarget) -> Option<String> {
@@ -437,6 +536,15 @@ fn create_worktree_askpass_delegate(
     operation: impl Into<SharedString>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
+) -> AskPassDelegate {
+    workspace_askpass_delegate(workspace, operation, window, cx)
+}
+
+pub fn workspace_askpass_delegate(
+    workspace: WeakEntity<Workspace>,
+    operation: impl Into<SharedString>,
+    window: &mut Window,
+    cx: &mut gpui::App,
 ) -> AskPassDelegate {
     let operation = operation.into();
     let window = window.window_handle();

@@ -702,6 +702,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_get_worktrees);
         client.add_entity_request_handler(Self::handle_create_worktree);
         client.add_entity_request_handler(Self::handle_merge_worktree_into_base);
+        client.add_entity_request_handler(Self::handle_checkpoint_worktree_changes);
         client.add_entity_request_handler(Self::handle_remove_worktree);
         client.add_entity_request_handler(Self::handle_rename_worktree);
         client.add_entity_request_handler(Self::handle_worktree_created_at);
@@ -2871,6 +2872,24 @@ impl GitStore {
             .await??;
 
         Ok(merge_worktree_into_base_result_to_proto(result))
+    }
+
+    async fn handle_checkpoint_worktree_changes(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitCheckpointWorktreeChanges>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitCheckpointWorktreeChangesResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+        let message = envelope.payload.message;
+
+        let checkpoint_created = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.checkpoint_worktree_changes(message)
+            })
+            .await??;
+
+        Ok(proto::GitCheckpointWorktreeChangesResponse { checkpoint_created })
     }
 
     async fn handle_worktree_created_at(
@@ -7598,6 +7617,34 @@ impl Repository {
                             })
                             .await?;
                         merge_worktree_into_base_result_from_proto(response)
+                    }
+                }
+            },
+        )
+    }
+
+    pub fn checkpoint_worktree_changes(
+        &mut self,
+        message: String,
+    ) -> oneshot::Receiver<Result<bool>> {
+        let id = self.id;
+        self.send_job(
+            "checkpoint_worktree_changes",
+            Some("git checkpoint thread worktree changes".into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.checkpoint_worktree_changes(message).await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        let response = client
+                            .request(proto::GitCheckpointWorktreeChanges {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                                message,
+                            })
+                            .await?;
+                        Ok(response.checkpoint_created)
                     }
                 }
             },

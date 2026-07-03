@@ -202,6 +202,8 @@ actions!(
         ArchiveSelectedThread,
         /// Merges linked worktree changes from the current thread into the main worktree branch.
         MergeThreadChanges,
+        /// Pushes the current thread's linked-worktree branch and opens a pull request page.
+        CreateThreadPullRequest,
         /// Opens a diff of the current thread's linked-worktree branch against its merge target.
         ReviewThreadBranchChanges,
         /// Removes the currently selected thread.

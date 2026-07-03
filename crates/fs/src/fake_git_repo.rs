@@ -772,6 +772,10 @@ impl GitRepository for FakeGitRepository {
         .boxed()
     }
 
+    fn checkpoint_worktree_changes(&self, _message: String) -> BoxFuture<'_, Result<bool>> {
+        async move { Ok(false) }.boxed()
+    }
+
     fn remove_worktree(&self, path: PathBuf, force: bool) -> BoxFuture<'_, Result<()>> {
         let fs = self.fs.clone();
         let executor = self.executor.clone();

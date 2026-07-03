@@ -602,6 +602,7 @@ pub struct ThreadView {
     pub(crate) permission_selections: HashMap<acp::ToolCallId, PermissionSelection>,
     pub _cancel_task: Option<Task<()>>,
     pub merge_thread_changes_task: Option<Task<()>>,
+    pub create_thread_pull_request_task: Option<Task<()>>,
     _save_task: Option<Task<()>>,
     _draft_resolve_task: Option<Task<()>>,
     pub skip_queue_processing_count: usize,
@@ -1055,6 +1056,7 @@ impl ThreadView {
             permission_selections: HashMap::default(),
             _cancel_task: None,
             merge_thread_changes_task: None,
+            create_thread_pull_request_task: None,
             _save_task: None,
             _draft_resolve_task: None,
             skip_queue_processing_count: 0,
@@ -2685,6 +2687,16 @@ impl ThreadView {
         targets.into_iter().next()
     }
 
+    fn thread_worktree_pull_request_target(
+        &self,
+        cx: &App,
+    ) -> Option<git_ui::worktree_service::ThreadWorktreeMergeTarget> {
+        self.thread_worktree_review_target(cx).filter(|target| {
+            let snapshot = target.repository.read(cx).snapshot();
+            snapshot.remote_origin_url.is_some() || snapshot.remote_upstream_url.is_some()
+        })
+    }
+
     fn merge_thread_changes_button_label(&self, cx: &App) -> Option<String> {
         let targets = self.thread_worktree_merge_targets(cx);
         match targets.as_slice() {
@@ -2812,6 +2824,80 @@ impl ThreadView {
         cx.notify();
     }
 
+    fn create_thread_pull_request(
+        &mut self,
+        _: &CreateThreadPullRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.create_thread_pull_request_task.is_some() {
+            return;
+        }
+
+        let Some(target) = self.thread_worktree_review_target(cx) else {
+            self.show_thread_pull_request_toast(
+                "No linked git worktree found for this thread".to_string(),
+                cx,
+            );
+            return;
+        };
+
+        let snapshot = target.repository.read(cx).snapshot();
+        if snapshot.remote_origin_url.is_none() && snapshot.remote_upstream_url.is_none() {
+            self.show_thread_pull_request_toast(
+                "No remote configured for repository".to_string(),
+                cx,
+            );
+            return;
+        }
+
+        let askpass = git_ui::worktree_service::workspace_askpass_delegate(
+            self.workspace.clone(),
+            "git push",
+            window,
+            cx,
+        );
+
+        self.create_thread_pull_request_task = Some(cx.spawn(async move |this, cx| {
+            let result = git_ui::worktree_service::create_pull_request_for_thread_worktree(
+                target, askpass, cx,
+            )
+            .await;
+            if let Err(error) = this.update(cx, |this, cx| {
+                this.create_thread_pull_request_task = None;
+                match result {
+                    Ok(result) => {
+                        cx.open_url(&result.url);
+                        let checkpoint = if result.checkpoint_created {
+                            " after checkpointing uncommitted changes"
+                        } else {
+                            ""
+                        };
+                        this.show_thread_pull_request_toast(
+                            format!(
+                                "Pushed {}{} — opening pull request page",
+                                result.branch_name, checkpoint
+                            ),
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        this.show_thread_pull_request_toast(
+                            format!("Create PR failed: {error:#}"),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            }) {
+                log::error!(
+                    "failed to update thread view after creating thread pull request: {error:#}"
+                );
+            }
+        }));
+        cx.notify();
+    }
+
     fn show_merge_thread_changes_toast(
         &self,
         message: String,
@@ -2862,6 +2948,22 @@ impl ThreadView {
                         cx,
                     );
                 }
+            });
+        }
+    }
+
+    fn show_thread_pull_request_toast(&self, message: String, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                struct CreateThreadPullRequestToast;
+                workspace.show_toast(
+                    Toast::new(
+                        NotificationId::unique::<CreateThreadPullRequestToast>(),
+                        message,
+                    )
+                    .autohide(),
+                    cx,
+                );
             });
         }
     }
@@ -6316,6 +6418,8 @@ impl ThreadView {
             }));
 
         let is_merging_thread_changes = self.merge_thread_changes_task.is_some();
+        let is_creating_thread_pull_request = self.create_thread_pull_request_task.is_some();
+        let is_thread_landing_busy = is_merging_thread_changes || is_creating_thread_pull_request;
         let review_thread_branch_changes_button =
             self.thread_worktree_review_target(cx).map(|_| {
                 Button::new("review-thread-branch-changes", "Review Changes")
@@ -6341,6 +6445,40 @@ impl ThreadView {
                         this.review_thread_branch_changes(&ReviewThreadBranchChanges, window, cx);
                     }))
             });
+        let create_thread_pull_request_button =
+            self.thread_worktree_pull_request_target(cx).map(|_| {
+                Button::new(
+                    "create-thread-pull-request",
+                    if is_creating_thread_pull_request {
+                        "Creating PR"
+                    } else {
+                        "Create PR"
+                    },
+                )
+                .label_size(LabelSize::Small)
+                .style(ButtonStyle::Subtle)
+                .start_icon(
+                    Icon::new(IconName::PullRequest)
+                        .size(IconSize::Small)
+                        .color(Color::Muted),
+                )
+                .loading(is_creating_thread_pull_request)
+                .disabled(is_thread_landing_busy)
+                .tooltip({
+                    let focus_handle = self.focus_handle.clone();
+                    move |_window, cx| {
+                        Tooltip::for_action_in(
+                            "Create PR",
+                            &CreateThreadPullRequest,
+                            &focus_handle,
+                            cx,
+                        )
+                    }
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.create_thread_pull_request(&CreateThreadPullRequest, window, cx);
+                }))
+            });
         let merge_thread_changes_button = self.merge_thread_changes_button_label(cx).map(|label| {
             Button::new(
                 "merge-thread-changes",
@@ -6358,7 +6496,7 @@ impl ThreadView {
                     .color(Color::Muted),
             )
             .loading(is_merging_thread_changes)
-            .disabled(is_merging_thread_changes)
+            .disabled(is_thread_landing_busy)
             .on_click(cx.listener(|this, _, window, cx| {
                 this.merge_thread_changes(&MergeThreadChanges, window, cx);
             }))
@@ -6515,6 +6653,9 @@ impl ThreadView {
 
         container
             .when_some(review_thread_branch_changes_button, |this, button| {
+                this.child(button)
+            })
+            .when_some(create_thread_pull_request_button, |this, button| {
                 this.child(button)
             })
             .when_some(merge_thread_changes_button, |this, button| {
@@ -11455,6 +11596,7 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::scroll_output_to_next_message))
             .on_action(cx.listener(Self::toggle_search))
             .on_action(cx.listener(Self::review_thread_branch_changes))
+            .on_action(cx.listener(Self::create_thread_pull_request))
             .on_action(cx.listener(Self::merge_thread_changes))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);

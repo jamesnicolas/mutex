@@ -616,6 +616,16 @@ message GitMergeWorktreeIntoBaseResponse {
   bool auto_committed = 4;
 }
 
+message GitCheckpointWorktreeChanges {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+  string message = 3;
+}
+
+message GitCheckpointWorktreeChangesResponse {
+  bool checkpoint_created = 1;
+}
+
 message GitCreateCheckpoint {
   uint64 project_id = 1;
   uint64 repository_id = 2;
