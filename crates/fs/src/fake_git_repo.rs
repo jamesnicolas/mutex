@@ -14,8 +14,8 @@ use git::{
         AskPassDelegate, Branch, CommitData, CommitDataReader, CommitDetails, CommitOptions,
         CreateWorktreeTarget, FetchOptions, FileHistoryChangedFileSets, GRAPH_CHUNK_SIZE,
         GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData, LogOrder, LogSource,
-        PushOptions, RefEdit, Remote, RepoPath, ResetMode, SearchCommitArgs, Worktree,
-        commit_hash_search_query,
+        MergeWorktreeIntoBaseResult, MergeWorktreeIntoBaseResultKind, PushOptions, RefEdit, Remote,
+        RepoPath, ResetMode, SearchCommitArgs, Worktree, commit_hash_search_query,
     },
     stash::GitStash,
     status::{
@@ -756,6 +756,18 @@ impl GitRepository for FakeGitRepository {
             }
 
             Ok(())
+        }
+        .boxed()
+    }
+
+    fn merge_worktree_into_base(&self) -> BoxFuture<'_, Result<MergeWorktreeIntoBaseResult>> {
+        async move {
+            Ok(MergeWorktreeIntoBaseResult {
+                kind: MergeWorktreeIntoBaseResultKind::AlreadyUpToDate,
+                target_branch_name: "main".to_string(),
+                source_branch_name: None,
+                auto_committed: false,
+            })
         }
         .boxed()
     }

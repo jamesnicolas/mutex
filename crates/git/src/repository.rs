@@ -498,6 +498,21 @@ impl RemoteCommandOutput {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeWorktreeIntoBaseResult {
+    pub kind: MergeWorktreeIntoBaseResultKind,
+    pub target_branch_name: String,
+    pub source_branch_name: Option<String>,
+    pub auto_committed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeWorktreeIntoBaseResultKind {
+    FastForward,
+    MergeCommit,
+    AlreadyUpToDate,
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct UpstreamTrackingStatus {
     pub ahead: u32,
@@ -899,6 +914,8 @@ pub trait GitRepository: Send + Sync {
         worktree_path: PathBuf,
         create: bool,
     ) -> BoxFuture<'_, Result<()>>;
+
+    fn merge_worktree_into_base(&self) -> BoxFuture<'_, Result<MergeWorktreeIntoBaseResult>>;
 
     fn remove_worktree(&self, path: PathBuf, force: bool) -> BoxFuture<'_, Result<()>>;
 
@@ -2106,6 +2123,38 @@ impl GitRepository for RealGitRepository {
                     git_binary.run(&["checkout", &branch_name]).await?;
                 }
                 anyhow::Ok(())
+            })
+            .boxed()
+    }
+
+    fn merge_worktree_into_base(&self) -> BoxFuture<'_, Result<MergeWorktreeIntoBaseResult>> {
+        let source_git = self.git_binary_in_worktree();
+        let git_dir = self.git_dir.clone();
+        let common_dir = self.common_dir.clone();
+        let main_worktree_path = original_repo_path_from_common_dir(&self.common_dir);
+        let git_binary_path = self.any_git_binary_path.clone();
+        let executor = self.executor.clone();
+        let is_trusted = self.is_trusted();
+
+        self.executor
+            .spawn(async move {
+                if git_dir == common_dir {
+                    anyhow::bail!("thread changes can only be merged from a linked git worktree");
+                }
+
+                let source_git = source_git?;
+                let main_worktree_path = main_worktree_path.context(
+                    "cannot merge this linked worktree because its repository has no main worktree",
+                )?;
+                let main_git = GitBinary::new(
+                    git_binary_path,
+                    main_worktree_path,
+                    common_dir,
+                    executor,
+                    is_trusted,
+                );
+
+                merge_worktree_into_base_with_git(source_git, main_git).await
             })
             .boxed()
     }
@@ -3849,6 +3898,238 @@ fn format_branch_scan_error(output: &Output) -> String {
     }
 }
 
+async fn merge_worktree_into_base_with_git(
+    source_git: GitBinary,
+    main_git: GitBinary,
+) -> Result<MergeWorktreeIntoBaseResult> {
+    let target_branch_name = main_git
+        .run(&["branch", "--show-current"])
+        .await
+        .context("failed to determine the branch checked out in the main worktree")?;
+    if target_branch_name.is_empty() {
+        anyhow::bail!(
+            "cannot merge thread changes because the main worktree is in detached HEAD state"
+        );
+    }
+
+    if git_merge_in_progress(&main_git).await? {
+        anyhow::bail!(
+            "cannot merge thread changes into {target_branch_name} because the main worktree already has a merge in progress; resolve or abort it and try again"
+        );
+    }
+
+    let main_has_staged_changes = git_has_staged_changes(&main_git).await?;
+    if main_has_staged_changes {
+        anyhow::bail!(
+            "cannot merge thread changes into {target_branch_name} because the main worktree has staged changes; commit or stash them and try again"
+        );
+    }
+    let main_has_uncommitted_changes = git_has_uncommitted_changes(&main_git).await?;
+
+    let auto_committed = auto_commit_worktree_changes(&source_git).await?;
+    let source_branch_name = git_current_branch_name(&source_git)
+        .await?
+        .filter(|branch_name| !branch_name.is_empty());
+    let source_head_sha = source_git
+        .run(&["rev-parse", "HEAD"])
+        .await
+        .context("failed to read the thread worktree HEAD")?;
+    let target_head_sha = main_git
+        .run(&["rev-parse", "HEAD"])
+        .await
+        .context("failed to read the main worktree HEAD")?;
+
+    if git_is_ancestor(&main_git, &source_head_sha, "HEAD").await? {
+        return Ok(MergeWorktreeIntoBaseResult {
+            kind: MergeWorktreeIntoBaseResultKind::AlreadyUpToDate,
+            target_branch_name,
+            source_branch_name,
+            auto_committed,
+        });
+    }
+
+    let target_is_ancestor = git_is_ancestor(&main_git, &target_head_sha, &source_head_sha).await?;
+    if target_is_ancestor {
+        run_merge_command(
+            &main_git,
+            &["merge", "--ff-only", &source_head_sha],
+            &target_branch_name,
+            main_has_uncommitted_changes,
+        )
+        .await?;
+        return Ok(MergeWorktreeIntoBaseResult {
+            kind: MergeWorktreeIntoBaseResultKind::FastForward,
+            target_branch_name,
+            source_branch_name,
+            auto_committed,
+        });
+    }
+
+    run_merge_command(
+        &main_git,
+        &["merge", "--no-ff", "--no-edit", &source_head_sha],
+        &target_branch_name,
+        main_has_uncommitted_changes,
+    )
+    .await?;
+
+    Ok(MergeWorktreeIntoBaseResult {
+        kind: MergeWorktreeIntoBaseResultKind::MergeCommit,
+        target_branch_name,
+        source_branch_name,
+        auto_committed,
+    })
+}
+
+async fn git_current_branch_name(git: &GitBinary) -> Result<Option<String>> {
+    let branch_name = git
+        .run(&["branch", "--show-current"])
+        .await
+        .context("failed to determine current git branch")?;
+    Ok((!branch_name.is_empty()).then_some(branch_name))
+}
+
+async fn git_has_uncommitted_changes(git: &GitBinary) -> Result<bool> {
+    let status = git
+        .run(&["status", "--porcelain=v1", "-z"])
+        .await
+        .context("failed to check git status")?;
+    Ok(!status.is_empty())
+}
+
+async fn auto_commit_worktree_changes(git: &GitBinary) -> Result<bool> {
+    if !git_has_uncommitted_changes(git).await? {
+        return Ok(false);
+    }
+
+    git.run(&["add", "--all"])
+        .await
+        .context("failed to stage thread worktree changes before merge")?;
+
+    if !git_has_staged_changes(git).await? {
+        return Ok(false);
+    }
+
+    let mut command = git.build_command(&[
+        "commit",
+        "--quiet",
+        "-m",
+        "Checkpoint thread changes before merge",
+        "--cleanup=strip",
+        "--no-verify",
+    ]);
+    command.envs(checkpoint_author_envs());
+    let output = command.output().await?;
+    if !output.status.success() {
+        return Err(git_command_error(
+            "git commit failed while checkpointing thread worktree changes",
+            &output,
+        ));
+    }
+
+    Ok(true)
+}
+
+async fn git_has_staged_changes(git: &GitBinary) -> Result<bool> {
+    let output = git
+        .build_command(&["diff", "--cached", "--quiet"])
+        .output()
+        .await?;
+    if output.status.success() {
+        return Ok(false);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(true);
+    }
+    Err(git_command_error("git diff --cached failed", &output))
+}
+
+async fn git_is_ancestor(git: &GitBinary, ancestor: &str, descendant: &str) -> Result<bool> {
+    let output = git
+        .build_command(&["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .await?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    Err(git_command_error("git merge-base failed", &output))
+}
+
+async fn git_merge_in_progress(git: &GitBinary) -> Result<bool> {
+    let output = git
+        .build_command(&["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        .output()
+        .await?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    Err(git_command_error(
+        "git rev-parse MERGE_HEAD failed",
+        &output,
+    ))
+}
+
+async fn run_merge_command(
+    git: &GitBinary,
+    args: &[&str],
+    target_branch_name: &str,
+    main_has_uncommitted_changes: bool,
+) -> Result<()> {
+    let mut command = git.build_command(args);
+    command.envs(checkpoint_author_envs());
+    let output = command.output().await?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let output_details = git_output_details(&output);
+    if git_merge_in_progress(git).await? {
+        git.run(&["merge", "--abort"]).await.with_context(|| {
+            format!("failed to abort merge into {target_branch_name} after git reported an error")
+        })?;
+        anyhow::bail!(
+            "merge conflict while merging thread changes into {target_branch_name}; the merge was aborted cleanly. Resolve the changes manually.\n{output_details}"
+        );
+    }
+
+    if main_has_uncommitted_changes {
+        anyhow::bail!(
+            "cannot merge thread changes into {target_branch_name} because the main worktree has uncommitted changes that Git would overwrite; commit or stash them and try again.\n{output_details}"
+        );
+    }
+
+    Err(git_command_error(
+        &format!("git merge failed while merging thread changes into {target_branch_name}"),
+        &output,
+    ))
+}
+
+fn git_command_error(operation: &str, output: &Output) -> anyhow::Error {
+    let details = git_output_details(output);
+    if details.is_empty() {
+        anyhow!("{operation}: exited with {}", output.status)
+    } else {
+        anyhow!("{operation}:\n{details}")
+    }
+}
+
+fn git_output_details(output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
 fn parse_upstream_track(upstream_track: &str) -> Result<UpstreamTracking> {
     if upstream_track.is_empty() {
         return Ok(UpstreamTracking::Tracked(UpstreamTrackingStatus {
@@ -3935,6 +4216,36 @@ mod tests {
     fn git_init_repo(path: &Path) {
         fs::create_dir_all(path).expect("failed to create repo directory");
         git_command(path, ["init", "-b", "main"]);
+    }
+
+    fn open_real_git_repository(path: &Path, cx: &TestAppContext) -> RealGitRepository {
+        RealGitRepository::new(&path.join(".git"), None, Some("git".into()), cx.executor())
+            .expect("failed to open real git repository")
+    }
+
+    fn commit_file(working_directory: &Path, path: &str, contents: &str, message: &str) {
+        fs::write(working_directory.join(path), contents).expect("failed to write test file");
+        git_command(working_directory, ["add", path]);
+        git_command(working_directory, ["commit", "-m", message]);
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn git_output<I, S>(working_directory: &Path, arguments: I) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(working_directory)
+            .env("GIT_CONFIG_GLOBAL", "")
+            .env("GIT_CONFIG_SYSTEM", "")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@mutex.dev")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@mutex.dev")
+            .output()
+            .expect("failed to run git command")
     }
 
     fn test_commit_envs() -> HashMap<String, String> {
@@ -5036,6 +5347,265 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing, None);
+    }
+
+    #[gpui::test]
+    async fn test_merge_worktree_into_base_fast_forwards(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "file.txt", "base", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        commit_file(&worktree_path, "thread.txt", "thread", "thread change");
+        let source_head = git_output(&worktree_path, ["rev-parse", "HEAD"]);
+        let source_head = String::from_utf8(source_head.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let result = worktree_repo.merge_worktree_into_base().await.unwrap();
+
+        assert_eq!(result.kind, MergeWorktreeIntoBaseResultKind::FastForward);
+        assert_eq!(result.target_branch_name, "main");
+        assert_eq!(result.source_branch_name.as_deref(), Some("thread"));
+        assert!(!result.auto_committed);
+
+        let main_head = git_output(&repo_dir, ["rev-parse", "HEAD"]);
+        let main_head = String::from_utf8(main_head.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(main_head, source_head);
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("thread.txt")).unwrap(),
+            "thread"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_merge_worktree_into_base_creates_merge_commit(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "file.txt", "base", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        commit_file(&repo_dir, "main.txt", "main", "main change");
+        commit_file(&worktree_path, "thread.txt", "thread", "thread change");
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let result = worktree_repo.merge_worktree_into_base().await.unwrap();
+
+        assert_eq!(result.kind, MergeWorktreeIntoBaseResultKind::MergeCommit);
+        assert_eq!(result.target_branch_name, "main");
+
+        let parents = git_output(&repo_dir, ["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert!(parents.status.success());
+        let parents = String::from_utf8(parents.stdout).unwrap();
+        assert_eq!(parents.split_whitespace().count(), 3);
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("main.txt")).unwrap(),
+            "main"
+        );
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("thread.txt")).unwrap(),
+            "thread"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_merge_worktree_into_base_aborts_conflict(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "conflict.txt", "base\n", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        commit_file(&repo_dir, "conflict.txt", "main\n", "main change");
+        let main_head_before = git_output(&repo_dir, ["rev-parse", "HEAD"]);
+        let main_head_before = String::from_utf8(main_head_before.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        commit_file(&worktree_path, "conflict.txt", "thread\n", "thread change");
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let error = worktree_repo
+            .merge_worktree_into_base()
+            .await
+            .expect_err("conflicting merge should fail");
+        assert!(error.to_string().contains("the merge was aborted cleanly"));
+
+        let merge_head = git_output(&repo_dir, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        assert!(!merge_head.status.success());
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("conflict.txt")).unwrap(),
+            "main\n"
+        );
+        let status = git_output(&repo_dir, ["status", "--porcelain=v1"]);
+        assert!(status.status.success());
+        assert!(String::from_utf8(status.stdout).unwrap().is_empty());
+        let main_head_after = git_output(&repo_dir, ["rev-parse", "HEAD"]);
+        let main_head_after = String::from_utf8(main_head_after.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(main_head_after, main_head_before);
+    }
+
+    #[gpui::test]
+    async fn test_merge_worktree_into_base_preserves_existing_main_merge(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "conflict.txt", "base\n", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        commit_file(&worktree_path, "thread.txt", "thread", "thread change");
+        git_command(&repo_dir, ["switch", "-c", "side"]);
+        commit_file(&repo_dir, "conflict.txt", "side\n", "side change");
+        git_command(&repo_dir, ["switch", "main"]);
+        commit_file(&repo_dir, "conflict.txt", "main\n", "main change");
+
+        let merge_output = git_output(&repo_dir, ["merge", "side"]);
+        assert!(!merge_output.status.success());
+        let merge_head_before =
+            git_output(&repo_dir, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        assert!(merge_head_before.status.success());
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let error = worktree_repo
+            .merge_worktree_into_base()
+            .await
+            .expect_err("existing main worktree merge should block thread merge");
+        assert!(
+            error
+                .to_string()
+                .contains("already has a merge in progress")
+        );
+
+        let merge_head_after = git_output(&repo_dir, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+        assert!(merge_head_after.status.success());
+        assert_eq!(merge_head_after.stdout, merge_head_before.stdout);
+    }
+
+    #[gpui::test]
+    async fn test_merge_worktree_into_base_auto_commits_dirty_worktree(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        let worktree_path = temp_dir.path().join("worktree");
+        git_init_repo(&repo_dir);
+        commit_file(&repo_dir, "file.txt", "base", "initial");
+
+        let main_repo = open_real_git_repository(&repo_dir, cx);
+        main_repo
+            .create_worktree(
+                CreateWorktreeTarget::NewBranch {
+                    branch_name: "thread".to_string(),
+                    base_sha: Some("HEAD".to_string()),
+                },
+                worktree_path.clone(),
+            )
+            .await
+            .unwrap();
+
+        fs::write(worktree_path.join("file.txt"), "dirty").unwrap();
+        fs::write(worktree_path.join("staged.txt"), "staged").unwrap();
+        git_command(&worktree_path, ["add", "staged.txt"]);
+        fs::write(worktree_path.join("untracked.txt"), "untracked").unwrap();
+
+        let worktree_repo = open_real_git_repository(&worktree_path, cx);
+        let result = worktree_repo.merge_worktree_into_base().await.unwrap();
+
+        assert_eq!(result.kind, MergeWorktreeIntoBaseResultKind::FastForward);
+        assert!(result.auto_committed);
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("file.txt")).unwrap(),
+            "dirty"
+        );
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("staged.txt")).unwrap(),
+            "staged"
+        );
+        assert_eq!(
+            fs::read_to_string(repo_dir.join("untracked.txt")).unwrap(),
+            "untracked"
+        );
+
+        let message = git_output(&worktree_path, ["log", "-1", "--pretty=%B"]);
+        assert!(message.status.success());
+        assert_eq!(
+            String::from_utf8(message.stdout).unwrap().trim(),
+            "Checkpoint thread changes before merge"
+        );
+        let status = git_output(&worktree_path, ["status", "--porcelain=v1"]);
+        assert!(status.status.success());
+        assert!(String::from_utf8(status.stdout).unwrap().is_empty());
     }
 
     #[gpui::test]

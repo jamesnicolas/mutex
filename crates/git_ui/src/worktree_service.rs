@@ -354,6 +354,59 @@ pub fn classify_worktrees(
     (git_repos, non_git_paths)
 }
 
+#[derive(Clone)]
+pub struct ThreadWorktreeMergeTarget {
+    pub repository: Entity<Repository>,
+    pub target_branch_name: Option<String>,
+}
+
+pub fn thread_worktree_merge_targets(
+    project: &Project,
+    cx: &gpui::App,
+) -> Vec<ThreadWorktreeMergeTarget> {
+    project
+        .repositories(cx)
+        .values()
+        .filter_map(|repository| {
+            let snapshot = repository.read(cx).snapshot();
+            if !snapshot.is_linked_worktree() {
+                return None;
+            }
+            let target_branch_name = snapshot
+                .linked_worktrees()
+                .iter()
+                .find(|worktree| worktree.is_main)
+                .and_then(|worktree| worktree.branch_name())
+                .map(ToOwned::to_owned);
+            Some(ThreadWorktreeMergeTarget {
+                repository: repository.clone(),
+                target_branch_name,
+            })
+        })
+        .collect()
+}
+
+pub async fn merge_thread_worktrees_into_base(
+    targets: Vec<ThreadWorktreeMergeTarget>,
+    cx: &mut gpui::AsyncApp,
+) -> anyhow::Result<Vec<git::repository::MergeWorktreeIntoBaseResult>> {
+    if targets.is_empty() {
+        anyhow::bail!("No linked git worktrees found in the current project");
+    }
+
+    let mut results = Vec::with_capacity(targets.len());
+    for target in targets {
+        let receiver = target
+            .repository
+            .update(cx, |repository, _cx| repository.merge_worktree_into_base());
+        let result = receiver
+            .await
+            .map_err(|_| anyhow!("merge thread changes operation was canceled"))??;
+        results.push(result);
+    }
+    Ok(results)
+}
+
 /// Resolves a branch target into the ref the new worktree should be based on.
 /// Returns `None` for `CurrentBranch`, meaning "use the current HEAD".
 pub fn resolve_worktree_branch_target(branch_target: &NewWorktreeBranchTarget) -> Option<String> {

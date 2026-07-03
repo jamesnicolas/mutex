@@ -37,8 +37,9 @@ use git::{
         Branch, BranchesScanResult, CommitData, CommitDetails, CommitDiff, CommitFile,
         CommitOptions, CreateWorktreeTarget, DiffType, FetchOptions, FileHistoryChangedFileSets,
         GitCommitTemplate, GitRepository, GitRepositoryCheckpoint, InitialGraphCommitData,
-        LogOrder, LogSource, PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode,
-        SearchCommitArgs, UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
+        LogOrder, LogSource, MergeWorktreeIntoBaseResult, MergeWorktreeIntoBaseResultKind,
+        PushOptions, Remote, RemoteCommandOutput, RepoPath, ResetMode, SearchCommitArgs,
+        UpstreamTrackingStatus, Worktree as GitWorktree, delete_branch_flag,
     },
     stash::{GitStash, StashEntry},
     status::{
@@ -700,6 +701,7 @@ impl GitStore {
         client.add_entity_request_handler(Self::handle_git_clone);
         client.add_entity_request_handler(Self::handle_get_worktrees);
         client.add_entity_request_handler(Self::handle_create_worktree);
+        client.add_entity_request_handler(Self::handle_merge_worktree_into_base);
         client.add_entity_request_handler(Self::handle_remove_worktree);
         client.add_entity_request_handler(Self::handle_rename_worktree);
         client.add_entity_request_handler(Self::handle_worktree_created_at);
@@ -2852,6 +2854,23 @@ impl GitStore {
             .await??;
 
         Ok(proto::Ack {})
+    }
+
+    async fn handle_merge_worktree_into_base(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::GitMergeWorktreeIntoBase>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::GitMergeWorktreeIntoBaseResponse> {
+        let repository_id = RepositoryId::from_proto(envelope.payload.repository_id);
+        let repository_handle = Self::repository_for_request(&this, repository_id, &mut cx)?;
+
+        let result = repository_handle
+            .update(&mut cx, |repository_handle, _| {
+                repository_handle.merge_worktree_into_base()
+            })
+            .await??;
+
+        Ok(merge_worktree_into_base_result_to_proto(result))
     }
 
     async fn handle_worktree_created_at(
@@ -7559,6 +7578,32 @@ impl Repository {
         )
     }
 
+    pub fn merge_worktree_into_base(
+        &mut self,
+    ) -> oneshot::Receiver<Result<MergeWorktreeIntoBaseResult>> {
+        let id = self.id;
+        self.send_job(
+            "merge_worktree_into_base",
+            Some("git merge thread worktree".into()),
+            move |repo, _cx| async move {
+                match repo {
+                    RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
+                        backend.merge_worktree_into_base().await
+                    }
+                    RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
+                        let response = client
+                            .request(proto::GitMergeWorktreeIntoBase {
+                                project_id: project_id.0,
+                                repository_id: id.to_proto(),
+                            })
+                            .await?;
+                        merge_worktree_into_base_result_from_proto(response)
+                    }
+                }
+            },
+        )
+    }
+
     pub fn checkout_branch_in_worktree(
         &mut self,
         branch_name: String,
@@ -9310,6 +9355,52 @@ fn proto_to_worktree(proto: &proto::Worktree) -> git::repository::Worktree {
         is_main: proto.is_main,
         is_bare: proto.is_bare,
     }
+}
+
+fn merge_worktree_into_base_result_to_proto(
+    result: MergeWorktreeIntoBaseResult,
+) -> proto::GitMergeWorktreeIntoBaseResponse {
+    let kind = match result.kind {
+        MergeWorktreeIntoBaseResultKind::FastForward => {
+            proto::git_merge_worktree_into_base_response::Kind::FastForward
+        }
+        MergeWorktreeIntoBaseResultKind::MergeCommit => {
+            proto::git_merge_worktree_into_base_response::Kind::MergeCommit
+        }
+        MergeWorktreeIntoBaseResultKind::AlreadyUpToDate => {
+            proto::git_merge_worktree_into_base_response::Kind::AlreadyUpToDate
+        }
+    };
+    proto::GitMergeWorktreeIntoBaseResponse {
+        kind: kind as i32,
+        target_branch_name: result.target_branch_name,
+        source_branch_name: result.source_branch_name,
+        auto_committed: result.auto_committed,
+    }
+}
+
+fn merge_worktree_into_base_result_from_proto(
+    proto: proto::GitMergeWorktreeIntoBaseResponse,
+) -> Result<MergeWorktreeIntoBaseResult> {
+    let kind = match proto::git_merge_worktree_into_base_response::Kind::from_i32(proto.kind)
+        .context("invalid merge worktree result kind")?
+    {
+        proto::git_merge_worktree_into_base_response::Kind::FastForward => {
+            MergeWorktreeIntoBaseResultKind::FastForward
+        }
+        proto::git_merge_worktree_into_base_response::Kind::MergeCommit => {
+            MergeWorktreeIntoBaseResultKind::MergeCommit
+        }
+        proto::git_merge_worktree_into_base_response::Kind::AlreadyUpToDate => {
+            MergeWorktreeIntoBaseResultKind::AlreadyUpToDate
+        }
+    };
+    Ok(MergeWorktreeIntoBaseResult {
+        kind,
+        target_branch_name: proto.target_branch_name,
+        source_branch_name: proto.source_branch_name,
+        auto_committed: proto.auto_committed,
+    })
 }
 
 fn proto_to_branch(proto: &proto::Branch) -> git::repository::Branch {

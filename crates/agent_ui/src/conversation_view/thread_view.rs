@@ -17,6 +17,7 @@ use agent_settings::UserAgentsMd;
 use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
+use git::repository::{MergeWorktreeIntoBaseResult, MergeWorktreeIntoBaseResultKind};
 
 use crate::completion_provider::AvailableSkill;
 use crate::message_editor::SharedSessionCapabilities;
@@ -598,6 +599,7 @@ pub struct ThreadView {
     pub resumed_without_history: bool,
     pub(crate) permission_selections: HashMap<acp::ToolCallId, PermissionSelection>,
     pub _cancel_task: Option<Task<()>>,
+    pub merge_thread_changes_task: Option<Task<()>>,
     _save_task: Option<Task<()>>,
     _draft_resolve_task: Option<Task<()>>,
     pub skip_queue_processing_count: usize,
@@ -734,6 +736,51 @@ pub fn open_markdown_in_workspace(
         })?;
         anyhow::Ok(())
     })
+}
+
+fn format_merge_thread_changes_result(results: Vec<MergeWorktreeIntoBaseResult>) -> String {
+    match results.as_slice() {
+        [] => "No linked git worktree found for this thread".to_string(),
+        [result] => {
+            let checkpoint = if result.auto_committed {
+                " after checkpointing uncommitted changes"
+            } else {
+                ""
+            };
+            match result.kind {
+                MergeWorktreeIntoBaseResultKind::FastForward => format!(
+                    "Merged thread changes into {} with a fast-forward{}",
+                    result.target_branch_name, checkpoint
+                ),
+                MergeWorktreeIntoBaseResultKind::MergeCommit => format!(
+                    "Merged thread changes into {}{}",
+                    result.target_branch_name, checkpoint
+                ),
+                MergeWorktreeIntoBaseResultKind::AlreadyUpToDate => {
+                    format!("Nothing to merge into {}", result.target_branch_name)
+                }
+            }
+        }
+        results => {
+            let merged_count = results
+                .iter()
+                .filter(|result| {
+                    !matches!(
+                        result.kind,
+                        MergeWorktreeIntoBaseResultKind::AlreadyUpToDate
+                    )
+                })
+                .count();
+            if merged_count == 0 {
+                format!("Nothing to merge in {} repositories", results.len())
+            } else {
+                format!(
+                    "Merged thread changes in {merged_count}/{} repositories",
+                    results.len()
+                )
+            }
+        }
+    }
 }
 
 impl ThreadView {
@@ -978,6 +1025,7 @@ impl ThreadView {
             new_server_version_available: None,
             permission_selections: HashMap::default(),
             _cancel_task: None,
+            merge_thread_changes_task: None,
             _save_task: None,
             _draft_resolve_task: None,
             skip_queue_processing_count: 0,
@@ -2579,6 +2627,97 @@ impl ThreadView {
 
     // thread stuff
 
+    fn thread_worktree_merge_targets(
+        &self,
+        cx: &App,
+    ) -> Vec<git_ui::worktree_service::ThreadWorktreeMergeTarget> {
+        self.project
+            .upgrade()
+            .map(|project| {
+                git_ui::worktree_service::thread_worktree_merge_targets(project.read(cx), cx)
+            })
+            .unwrap_or_default()
+    }
+
+    fn merge_thread_changes_button_label(&self, cx: &App) -> Option<String> {
+        let targets = self.thread_worktree_merge_targets(cx);
+        match targets.as_slice() {
+            [] => None,
+            [target] => Some(format!(
+                "Merge into {}",
+                target
+                    .target_branch_name
+                    .as_deref()
+                    .unwrap_or("base branch")
+            )),
+            targets => {
+                let first_branch_name = targets
+                    .first()
+                    .and_then(|target| target.target_branch_name.as_deref());
+                let same_branch_name = first_branch_name.filter(|branch_name| {
+                    targets
+                        .iter()
+                        .all(|target| target.target_branch_name.as_deref() == Some(*branch_name))
+                });
+                Some(match same_branch_name {
+                    Some(branch_name) => format!("Merge into {branch_name}"),
+                    None => "Merge into base branches".to_string(),
+                })
+            }
+        }
+    }
+
+    fn merge_thread_changes(
+        &mut self,
+        _: &MergeThreadChanges,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.merge_thread_changes_task.is_some() {
+            return;
+        }
+
+        let targets = self.thread_worktree_merge_targets(cx);
+        if targets.is_empty() {
+            self.show_merge_thread_changes_toast(
+                "No linked git worktree found for this thread".to_string(),
+                cx,
+            );
+            return;
+        }
+
+        self.merge_thread_changes_task = Some(cx.spawn(async move |this, cx| {
+            let result = git_ui::worktree_service::merge_thread_worktrees_into_base(targets, cx)
+                .await
+                .map(format_merge_thread_changes_result);
+            if let Err(error) = this.update(cx, |this, cx| {
+                this.merge_thread_changes_task = None;
+                let message = match result {
+                    Ok(message) => message,
+                    Err(error) => format!("Merge failed: {error:#}"),
+                };
+                this.show_merge_thread_changes_toast(message, cx);
+                cx.notify();
+            }) {
+                log::error!("failed to update thread view after merging thread changes: {error:#}");
+            }
+        }));
+        cx.notify();
+    }
+
+    fn show_merge_thread_changes_toast(&self, message: String, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                struct MergeThreadChangesToast;
+                workspace.show_toast(
+                    Toast::new(NotificationId::unique::<MergeThreadChangesToast>(), message)
+                        .autohide(),
+                    cx,
+                );
+            });
+        }
+    }
+
     fn share_thread(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some((thread, project)) = self.as_native_thread(cx).zip(self.project.upgrade()) else {
             return;
@@ -3885,16 +4024,13 @@ impl ThreadView {
                 h_flex().gap_1().child(
                     IconButton::new("review-changes", IconName::ListTodo)
                         .icon_size(IconSize::Small)
-                        .tooltip({
-                            let focus_handle = focus_handle.clone();
-                            move |_window, cx| {
-                                Tooltip::for_action_in(
-                                    "Review Changes",
-                                    &OpenAgentDiff,
-                                    &focus_handle,
-                                    cx,
-                                )
-                            }
+                        .tooltip(move |_window, cx| {
+                            Tooltip::for_action_in(
+                                "Review Changes",
+                                &OpenAgentDiff,
+                                &focus_handle,
+                                cx,
+                            )
                         })
                         .on_click(cx.listener(|_, _, window, cx| {
                             window.dispatch_action(OpenAgentDiff.boxed_clone(), cx);
@@ -6031,6 +6167,30 @@ impl ThreadView {
                 this.scroll_to_top(cx);
             }));
 
+        let is_merging_thread_changes = self.merge_thread_changes_task.is_some();
+        let merge_thread_changes_button = self.merge_thread_changes_button_label(cx).map(|label| {
+            Button::new(
+                "merge-thread-changes",
+                if is_merging_thread_changes {
+                    "Merging".to_string()
+                } else {
+                    label
+                },
+            )
+            .label_size(LabelSize::Small)
+            .style(ButtonStyle::Subtle)
+            .start_icon(
+                Icon::new(IconName::GitBranch)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            )
+            .loading(is_merging_thread_changes)
+            .disabled(is_merging_thread_changes)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.merge_thread_changes(&MergeThreadChanges, window, cx);
+            }))
+        });
+
         let show_stats = AgentSettings::get_global(cx).show_turn_stats;
         let last_turn_clock = show_stats
             .then(|| {
@@ -6181,6 +6341,9 @@ impl ThreadView {
         }
 
         container
+            .when_some(merge_thread_changes_button, |this, button| {
+                this.child(button)
+            })
             .child(open_as_markdown)
             .child(scroll_to_recent_user_prompt)
             .child(scroll_to_top)
@@ -11115,6 +11278,7 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::scroll_output_to_previous_message))
             .on_action(cx.listener(Self::scroll_output_to_next_message))
             .on_action(cx.listener(Self::toggle_search))
+            .on_action(cx.listener(Self::merge_thread_changes))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
             }))

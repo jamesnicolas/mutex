@@ -598,6 +598,24 @@ message GitCreateWorktree {
   bool use_existing_branch = 6;
 }
 
+message GitMergeWorktreeIntoBase {
+  uint64 project_id = 1;
+  uint64 repository_id = 2;
+}
+
+message GitMergeWorktreeIntoBaseResponse {
+  enum Kind {
+    FAST_FORWARD = 0;
+    MERGE_COMMIT = 1;
+    ALREADY_UP_TO_DATE = 2;
+  }
+
+  Kind kind = 1;
+  string target_branch_name = 2;
+  optional string source_branch_name = 3;
+  bool auto_committed = 4;
+}
+
 message GitCreateCheckpoint {
   uint64 project_id = 1;
   uint64 repository_id = 2;

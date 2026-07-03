@@ -200,6 +200,8 @@ actions!(
         AddContextServer,
         /// Archives the currently selected thread.
         ArchiveSelectedThread,
+        /// Merges linked worktree changes from the current thread into the main worktree branch.
+        MergeThreadChanges,
         /// Removes the currently selected thread.
         RemoveSelectedThread,
         /// Renames the currently selected thread.
