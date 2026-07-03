@@ -748,6 +748,20 @@ struct MergeThreadChangesSummary {
     offer_archive: bool,
 }
 
+enum MergeThreadArchiveAction {
+    SingleThread { session_id: String },
+    ParallelAttempts { group: String },
+}
+
+impl MergeThreadArchiveAction {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::SingleThread { .. } => "Archive Thread",
+            Self::ParallelAttempts { .. } => "Archive All Attempts",
+        }
+    }
+}
+
 fn summarize_merge_thread_changes_result(
     results: Vec<MergeWorktreeIntoBaseResult>,
 ) -> MergeThreadChangesSummary {
@@ -2871,7 +2885,6 @@ impl ThreadView {
         let Some(target) = self.thread_worktree_review_target(cx) else {
             self.show_merge_thread_changes_toast(
                 "No linked git worktree found for this thread".to_string(),
-                false,
                 None,
                 cx,
             );
@@ -2928,7 +2941,6 @@ impl ThreadView {
         if targets.is_empty() {
             self.show_merge_thread_changes_toast(
                 "No linked git worktree found for this thread".to_string(),
-                false,
                 None,
                 cx,
             );
@@ -2946,7 +2958,9 @@ impl ThreadView {
                     Ok(summary) => (summary.message, summary.offer_archive),
                     Err(error) => (format!("Merge failed: {error:#}"), false),
                 };
-                this.show_merge_thread_changes_toast(message, offer_archive, Some(session_id), cx);
+                let archive_action =
+                    offer_archive.then(|| this.merge_thread_archive_action(session_id.clone(), cx));
+                this.show_merge_thread_changes_toast(message, archive_action, cx);
                 cx.notify();
             }) {
                 log::error!("failed to update thread view after merging thread changes: {error:#}");
@@ -3032,42 +3046,21 @@ impl ThreadView {
     fn show_merge_thread_changes_toast(
         &self,
         message: String,
-        offer_archive: bool,
-        session_id: Option<String>,
+        archive_action: Option<MergeThreadArchiveAction>,
         cx: &mut Context<Self>,
     ) {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.update(cx, |workspace, cx| {
-                if let (true, Some(session_id)) = (offer_archive, session_id) {
+                if let Some(archive_action) = archive_action {
+                    let label = archive_action.label();
                     let toast = StatusToast::new(message, cx, |this, _cx| {
                         this.icon(
                             Icon::new(IconName::Check)
                                 .size(IconSize::Small)
                                 .color(Color::Success),
                         )
-                        .action("Archive Thread", move |window, cx| {
-                            if let Some(sidebar_focus_handle) = window
-                                .root::<MultiWorkspace>()
-                                .flatten()
-                                .and_then(|multi_workspace| {
-                                    multi_workspace
-                                        .read(cx)
-                                        .sidebar()
-                                        .map(|sidebar| sidebar.focus_handle(cx))
-                                })
-                            {
-                                sidebar_focus_handle.dispatch_action(
-                                    &ArchiveThread {
-                                        session_id: session_id.clone(),
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            } else {
-                                log::warn!(
-                                    "could not find sidebar to archive merged thread from toast"
-                                );
-                            }
+                        .action(label, move |window, cx| {
+                            Self::dispatch_merge_archive_action(&archive_action, window, cx);
                         })
                     });
                     workspace.toggle_status_toast(toast, cx);
@@ -3080,6 +3073,93 @@ impl ThreadView {
                     );
                 }
             });
+        }
+    }
+
+    fn merge_thread_archive_action(
+        &self,
+        session_id: String,
+        cx: &App,
+    ) -> MergeThreadArchiveAction {
+        let Some(store) = ThreadMetadataStore::try_global(cx) else {
+            return MergeThreadArchiveAction::SingleThread { session_id };
+        };
+        let store = store.read(cx);
+        let Some(thread_metadata) = store.entry(self.root_thread_id) else {
+            return MergeThreadArchiveAction::SingleThread { session_id };
+        };
+        let Some(group) = thread_metadata.parallel_attempt_group.clone() else {
+            return MergeThreadArchiveAction::SingleThread { session_id };
+        };
+
+        let has_other_unarchived_attempt = store.entries().any(|metadata| {
+            metadata.thread_id != self.root_thread_id
+                && !metadata.archived
+                && metadata.parallel_attempt_group.as_deref() == Some(group.as_str())
+        });
+
+        if has_other_unarchived_attempt {
+            MergeThreadArchiveAction::ParallelAttempts { group }
+        } else {
+            MergeThreadArchiveAction::SingleThread { session_id }
+        }
+    }
+
+    fn dispatch_merge_archive_action(
+        archive_action: &MergeThreadArchiveAction,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(sidebar_focus_handle) =
+            window
+                .root::<MultiWorkspace>()
+                .flatten()
+                .and_then(|multi_workspace| {
+                    multi_workspace
+                        .read(cx)
+                        .sidebar()
+                        .map(|sidebar| sidebar.focus_handle(cx))
+                })
+        else {
+            log::warn!("could not find sidebar to archive merged thread from toast");
+            return;
+        };
+
+        match archive_action {
+            MergeThreadArchiveAction::SingleThread { session_id } => {
+                sidebar_focus_handle.dispatch_action(
+                    &ArchiveThread {
+                        session_id: session_id.clone(),
+                    },
+                    window,
+                    cx,
+                );
+            }
+            MergeThreadArchiveAction::ParallelAttempts { group } => {
+                let session_ids = ThreadMetadataStore::try_global(cx)
+                    .map(|store| {
+                        store
+                            .read(cx)
+                            .entries()
+                            .filter(|metadata| {
+                                !metadata.archived
+                                    && metadata.parallel_attempt_group.as_deref()
+                                        == Some(group.as_str())
+                            })
+                            .filter_map(|metadata| {
+                                metadata
+                                    .session_id
+                                    .as_ref()
+                                    .map(|session_id| session_id.0.to_string())
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                for session_id in session_ids {
+                    sidebar_focus_handle.dispatch_action(&ArchiveThread { session_id }, window, cx);
+                }
+            }
         }
     }
 
@@ -12153,6 +12233,7 @@ fn parallel_attempt_requests(
             prompt: prompt.to_string(),
             agent_id: None,
             model: model.clone(),
+            parallel_attempt_group: Some(run_identifier.to_string()),
             use_new_worktree: true,
             worktree_name: Some(parallel_attempt_worktree_name(
                 prompt,
@@ -12340,6 +12421,10 @@ mod tests {
             .iter()
             .filter_map(|request| request.model.clone())
             .collect::<Vec<_>>();
+        let parallel_attempt_groups = requests
+            .iter()
+            .filter_map(|request| request.parallel_attempt_group.clone())
+            .collect::<Vec<_>>();
 
         assert_eq!(requests.len(), 4);
         assert_eq!(
@@ -12376,6 +12461,15 @@ mod tests {
                 "provider/model".to_string(),
                 "provider/model".to_string(),
                 "provider/model".to_string(),
+            ]
+        );
+        assert_eq!(
+            parallel_attempt_groups,
+            vec![
+                "run123".to_string(),
+                "run123".to_string(),
+                "run123".to_string(),
+                "run123".to_string(),
             ]
         );
     }

@@ -939,6 +939,7 @@ fn thread_metadata_to_debug_json(
         "agent_id": metadata.agent_id.0.to_string(),
         "title": metadata.title.as_ref().map(|t| t.to_string()),
         "title_override": metadata.title_override.as_ref().map(|t| t.to_string()),
+        "parallel_attempt_group": metadata.parallel_attempt_group.as_ref(),
         "updated_at": format_timestamp_human(&metadata.updated_at),
         "created_at": metadata.created_at.as_ref().map(format_timestamp_human),
         "interacted_at": metadata.interacted_at.as_ref().map(format_timestamp_human),
@@ -961,6 +962,8 @@ pub struct CreateThreadOptions {
     /// Model override, as `provider/model-id`. Only applied when the thread
     /// uses the native Mutex agent.
     pub model: Option<String>,
+    /// Persistent id linking threads created as parallel attempts.
+    pub parallel_attempt_group: Option<String>,
     /// Working directories to attach to the new thread (e.g., the path of a
     /// freshly-created sibling worktree). When `None`, the thread inherits
     /// the project's default path list.
@@ -3229,6 +3232,7 @@ impl AgentPanel {
         // shouldn't let that change the panel's selected_agent or the
         // last-used-agent preference. Snapshot and restore both.
         let saved_selected_agent = override_used.then(|| self.selected_agent.clone());
+        let parallel_attempt_group = options.parallel_attempt_group;
         let thread = self.create_agent_thread_with_server(
             agent,
             None,
@@ -3256,6 +3260,11 @@ impl AgentPanel {
             }
         }
         let thread_id = thread.conversation_view.read(cx).thread_id;
+        if let Some(parallel_attempt_group) = parallel_attempt_group {
+            ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                store.set_parallel_attempt_group(thread_id, parallel_attempt_group, cx);
+            });
+        }
         self.retained_threads
             .insert(thread_id, thread.conversation_view);
         thread_id
@@ -4909,6 +4918,7 @@ impl agent::SiblingThreadHost for AgentPanelSiblingHost {
                 initial_content: Some(initial_content),
                 agent: agent_choice.clone(),
                 model: request.model.clone(),
+                parallel_attempt_group: request.parallel_attempt_group.clone(),
                 work_dirs: None,
             };
 
@@ -7966,6 +7976,7 @@ mod tests {
                         agent_id: ProjectAgentId::new("Flaky"),
                         title: Some("Persistent chat".into()),
                         title_override: None,
+                        parallel_attempt_group: None,
                         updated_at: Utc::now(),
                         created_at: Some(Utc::now()),
                         interacted_at: None,

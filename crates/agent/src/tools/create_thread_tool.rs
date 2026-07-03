@@ -179,6 +179,7 @@ impl AgentTool for CreateThreadTool {
                 prompt: input.prompt,
                 agent_id: input.agent,
                 model: input.model,
+                parallel_attempt_group: None,
                 use_new_worktree: input.use_new_worktree,
                 worktree_name: input.worktree_name,
                 base_ref: input.base_ref,
