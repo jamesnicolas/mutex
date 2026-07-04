@@ -349,8 +349,6 @@ impl MultiWorkspace {
         workspace.update(cx, |workspace, cx| {
             workspace.set_multi_workspace(weak_self, active_workspace_id.clone(), cx);
         });
-        let sidebar_open = matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_));
-
         Self {
             window_id: window.window_handle().window_id(),
             retained_workspaces: Vec::new(),
@@ -358,7 +356,7 @@ impl MultiWorkspace {
             active_workspace: workspace,
             active_workspace_id,
             sidebar: None,
-            sidebar_open,
+            sidebar_open: false,
             sidebar_overlay: None,
             pending_removal_tasks: Vec::new(),
             _serialize_task: None,
@@ -383,6 +381,14 @@ impl MultiWorkspace {
                 }
             }));
         self.sidebar = Some(Box::new(sidebar));
+        // The agent layout shows the sidebar by default. Opening must go
+        // through `apply_open_sidebar` (rather than constructing with
+        // `sidebar_open: true`) so the active workspace gets retained and
+        // focus handles are wired up; session restore still overrides this
+        // for restored windows.
+        if matches!(AgentSettings::get_layout(cx), WindowLayout::Agent(_)) && !self.sidebar_open {
+            self.apply_open_sidebar(cx);
+        }
     }
 
     pub fn sidebar(&self) -> Option<&dyn SidebarHandle> {
@@ -1854,6 +1860,14 @@ impl MultiWorkspace {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_add_project_group(&mut self, group: ProjectGroup) {
+        if group.key.path_list().paths().is_empty()
+            || self
+                .project_groups
+                .iter()
+                .any(|existing_group| existing_group.key == group.key)
+        {
+            return;
+        }
         self.project_groups.push(ProjectGroupState {
             key: group.key,
             expanded: group.expanded,
