@@ -4707,6 +4707,14 @@ pub(crate) mod tests {
 
         let cx = &mut VisualTestContext::from_window(multi_workspace_handle.into(), cx);
         register_test_sidebar(true, cx);
+        if let Err(error) = multi_workspace_handle.update(cx, |mw, window, cx| {
+            if mw.sidebar_open() {
+                mw.close_sidebar(window, cx);
+            }
+        }) {
+            panic!("test window should still exist: {error}");
+        }
+        cx.run_until_parked();
 
         let thread_store = cx.update(|_window, cx| cx.new(|cx| ThreadStore::new(cx)));
         let connection_store =

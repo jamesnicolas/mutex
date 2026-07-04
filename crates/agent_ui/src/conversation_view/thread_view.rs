@@ -4735,6 +4735,7 @@ impl ThreadView {
             .size_full()
             .items_center()
             .justify_center()
+            .on_action(cx.listener(Self::handle_message_editor_move_up))
             .gap_6()
             .px_6()
             .pb_16()
