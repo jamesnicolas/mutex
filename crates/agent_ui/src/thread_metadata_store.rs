@@ -1990,6 +1990,7 @@ mod tests {
         cx.update(|cx| {
             let settings_store = settings::SettingsStore::test(cx);
             cx.set_global(settings_store);
+            cx.set_global(db::AppDatabase::test_new());
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);
             release_channel::init("0.0.0".parse().unwrap(), cx);
