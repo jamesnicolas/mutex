@@ -393,6 +393,28 @@ fn save_thread_metadata(
     project: &Entity<project::Project>,
     cx: &mut TestAppContext,
 ) {
+    save_thread_metadata_with_parallel_attempt_group(
+        session_id,
+        title,
+        updated_at,
+        created_at,
+        interacted_at,
+        None,
+        project,
+        cx,
+    );
+}
+
+fn save_thread_metadata_with_parallel_attempt_group(
+    session_id: acp::SessionId,
+    title: Option<SharedString>,
+    updated_at: DateTime<Utc>,
+    created_at: Option<DateTime<Utc>>,
+    interacted_at: Option<DateTime<Utc>>,
+    parallel_attempt_group: Option<&str>,
+    project: &Entity<project::Project>,
+    cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         let worktree_paths = project.read(cx).worktree_paths(cx);
         let remote_connection = project.read(cx).remote_connection_options(cx);
@@ -408,7 +430,7 @@ fn save_thread_metadata(
             agent_id: agent::ZED_AGENT_ID.clone(),
             title,
             title_override: None,
-            parallel_attempt_group: None,
+            parallel_attempt_group: parallel_attempt_group.map(str::to_string),
             updated_at,
             created_at,
             interacted_at,
@@ -448,6 +470,44 @@ fn save_thread_metadata_with_main_paths(
         parallel_attempt_group: None,
         updated_at,
         created_at: None,
+        interacted_at: None,
+        worktree_paths: WorktreePaths::from_path_lists(main_worktree_paths, folder_paths).unwrap(),
+        archived: false,
+        remote_connection: None,
+    };
+    cx.update(|cx| {
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx));
+    });
+    cx.run_until_parked();
+}
+
+fn save_thread_metadata_with_paths_and_parallel_attempt_group(
+    session_id: acp::SessionId,
+    title: SharedString,
+    folder_paths: PathList,
+    main_worktree_paths: PathList,
+    updated_at: DateTime<Utc>,
+    created_at: Option<DateTime<Utc>>,
+    parallel_attempt_group: Option<&str>,
+    cx: &mut TestAppContext,
+) {
+    let thread_id = cx.update(|cx| {
+        ThreadMetadataStore::global(cx)
+            .read(cx)
+            .entries()
+            .find(|entry| entry.session_id.as_ref() == Some(&session_id))
+            .map(|entry| entry.thread_id)
+            .unwrap_or_else(ThreadId::new)
+    });
+    let metadata = ThreadMetadata {
+        thread_id,
+        session_id: Some(session_id),
+        agent_id: agent::ZED_AGENT_ID.clone(),
+        title: Some(title),
+        title_override: None,
+        parallel_attempt_group: parallel_attempt_group.map(str::to_string),
+        updated_at,
+        created_at,
         interacted_at: None,
         worktree_paths: WorktreePaths::from_path_lists(main_worktree_paths, folder_paths).unwrap(),
         archived: false,
@@ -579,6 +639,11 @@ fn visible_entries_as_strings(
                     }
                     ListEntry::Thread(thread) => {
                         let title = thread.metadata.display_title();
+                        let attempt = thread
+                            .parallel_attempt
+                            .as_ref()
+                            .map(|attempt| format!(" [{}]", attempt.label))
+                            .unwrap_or_default();
                         let worktree = format_linked_worktree_chips(&thread.worktrees);
 
                         {
@@ -597,7 +662,9 @@ fn visible_entries_as_strings(
                             } else {
                                 ""
                             };
-                            format!("  {title}{worktree}{live}{status_str}{notified}{selected}")
+                            format!(
+                                "  {title}{attempt}{worktree}{live}{status_str}{notified}{selected}"
+                            )
                         }
                     }
                     ListEntry::Terminal(terminal) => {
@@ -1121,6 +1188,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 highlight_positions: Vec::new(),
                 worktrees: Vec::new(),
                 diff_stats: DiffStats::default(),
+                parallel_attempt: None,
             })),
             // Active thread with Running status
             ListEntry::Thread(Arc::new(ThreadEntry {
@@ -1149,6 +1217,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 highlight_positions: Vec::new(),
                 worktrees: Vec::new(),
                 diff_stats: DiffStats::default(),
+                parallel_attempt: None,
             })),
             // Active thread with Error status
             ListEntry::Thread(Arc::new(ThreadEntry {
@@ -1177,6 +1246,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 highlight_positions: Vec::new(),
                 worktrees: Vec::new(),
                 diff_stats: DiffStats::default(),
+                parallel_attempt: None,
             })),
             // Thread with WaitingForConfirmation status, not active
             // remote_connection: None,
@@ -1206,6 +1276,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 highlight_positions: Vec::new(),
                 worktrees: Vec::new(),
                 diff_stats: DiffStats::default(),
+                parallel_attempt: None,
             })),
             // Background thread that completed (should show notification)
             // remote_connection: None,
@@ -1235,6 +1306,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 highlight_positions: Vec::new(),
                 worktrees: Vec::new(),
                 diff_stats: DiffStats::default(),
+                parallel_attempt: None,
             })),
             // Collapsed project header
             ListEntry::ProjectHeader {
@@ -9054,6 +9126,260 @@ fn thread_id_for(session_id: &acp::SessionId, cx: &mut TestAppContext) -> Thread
             .map(|m| m.thread_id)
             .expect("thread metadata should exist")
     })
+}
+
+fn seed_project_group(
+    multi_workspace: &Entity<MultiWorkspace>,
+    project_paths: &PathList,
+    cx: &mut gpui::VisualTestContext,
+) {
+    let key = ProjectGroupKey::new(None, project_paths.clone());
+    multi_workspace.update(cx, |multi_workspace, _cx| {
+        multi_workspace.test_add_project_group(workspace::ProjectGroup {
+            key,
+            workspaces: Vec::new(),
+            expanded: true,
+        });
+    });
+    cx.run_until_parked();
+}
+
+fn refresh_sidebar_entries(
+    multi_workspace: &Entity<MultiWorkspace>,
+    cx: &mut gpui::VisualTestContext,
+) {
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+}
+
+fn visible_thread_titles_and_attempts(
+    sidebar: &Entity<Sidebar>,
+    cx: &mut gpui::VisualTestContext,
+) -> Vec<(String, Option<String>)> {
+    sidebar.read_with(cx, |sidebar, _cx| {
+        sidebar
+            .contents
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ListEntry::Thread(thread) => Some((
+                    thread.metadata.display_title().to_string(),
+                    thread
+                        .parallel_attempt
+                        .as_ref()
+                        .map(|attempt| attempt.label.to_string()),
+                )),
+                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
+            })
+            .collect()
+    })
+}
+
+#[gpui::test]
+async fn test_parallel_attempt_group_threads_are_contiguous_and_created_ordered(
+    cx: &mut TestAppContext,
+) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    let project_paths = PathList::new(&[PathBuf::from("/my-project")]);
+    seed_project_group(&multi_workspace, &project_paths, cx);
+
+    let timestamp = |day| chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, day, 0, 0, 0).unwrap();
+
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("newer-ungrouped")),
+        "Newer ungrouped".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(6),
+        Some(timestamp(6)),
+        None,
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("attempt-two")),
+        "Attempt two".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(5),
+        Some(timestamp(2)),
+        Some("best-of-three"),
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("middle-ungrouped")),
+        "Middle ungrouped".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(4),
+        Some(timestamp(4)),
+        None,
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("attempt-three")),
+        "Attempt three".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(3),
+        Some(timestamp(3)),
+        Some("best-of-three"),
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("attempt-one")),
+        "Attempt one".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(1),
+        Some(timestamp(1)),
+        Some("best-of-three"),
+        cx,
+    );
+    refresh_sidebar_entries(&multi_workspace, cx);
+
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            "v [my-project]",
+            "  Newer ungrouped",
+            "  Attempt one [1/3]",
+            "  Attempt two [2/3]",
+            "  Attempt three [3/3]",
+            "  Middle ungrouped",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_parallel_attempt_indicator_is_removed_for_single_visible_member(
+    cx: &mut TestAppContext,
+) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    let project_paths = PathList::new(&[PathBuf::from("/my-project")]);
+    seed_project_group(&multi_workspace, &project_paths, cx);
+
+    let timestamp = |day| chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, day, 0, 0, 0).unwrap();
+    let session_id_one = acp::SessionId::new(Arc::from("attempt-one"));
+    let session_id_two = acp::SessionId::new(Arc::from("attempt-two"));
+    let session_id_three = acp::SessionId::new(Arc::from("attempt-three"));
+
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        session_id_one,
+        "Attempt one".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(3),
+        Some(timestamp(1)),
+        Some("archive-run"),
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        session_id_two.clone(),
+        "Attempt two".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(2),
+        Some(timestamp(2)),
+        Some("archive-run"),
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        session_id_three.clone(),
+        "Attempt three".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(1),
+        Some(timestamp(3)),
+        Some("archive-run"),
+        cx,
+    );
+    refresh_sidebar_entries(&multi_workspace, cx);
+    assert_eq!(
+        visible_thread_titles_and_attempts(&sidebar, cx),
+        vec![
+            ("Attempt one".to_string(), Some("1/3".to_string())),
+            ("Attempt two".to_string(), Some("2/3".to_string())),
+            ("Attempt three".to_string(), Some("3/3".to_string())),
+        ]
+    );
+
+    let thread_id_two = thread_id_for(&session_id_two, cx);
+    let thread_id_three = thread_id_for(&session_id_three, cx);
+    cx.update(|_, cx| {
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+            store.archive(thread_id_two, None, cx);
+            store.archive(thread_id_three, None, cx);
+        });
+    });
+    refresh_sidebar_entries(&multi_workspace, cx);
+
+    assert_eq!(
+        visible_thread_titles_and_attempts(&sidebar, cx),
+        vec![("Attempt one".to_string(), None)]
+    );
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec!["v [my-project]", "  Attempt one"]
+    );
+}
+
+#[gpui::test]
+async fn test_ungrouped_thread_ordering_is_unchanged(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    let project_paths = PathList::new(&[PathBuf::from("/my-project")]);
+    seed_project_group(&multi_workspace, &project_paths, cx);
+
+    let timestamp = |day| chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, day, 0, 0, 0).unwrap();
+
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("oldest")),
+        "Oldest".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(1),
+        Some(timestamp(1)),
+        None,
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("newest")),
+        "Newest".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(3),
+        Some(timestamp(3)),
+        None,
+        cx,
+    );
+    save_thread_metadata_with_paths_and_parallel_attempt_group(
+        acp::SessionId::new(Arc::from("middle")),
+        "Middle".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        timestamp(2),
+        Some(timestamp(2)),
+        None,
+        cx,
+    );
+    refresh_sidebar_entries(&multi_workspace, cx);
+
+    assert_eq!(
+        visible_thread_titles_and_attempts(&sidebar, cx),
+        vec![
+            ("Newest".to_string(), None),
+            ("Middle".to_string(), None),
+            ("Oldest".to_string(), None),
+        ]
+    );
 }
 
 #[gpui::test]

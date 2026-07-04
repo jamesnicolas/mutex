@@ -346,6 +346,13 @@ enum DraftKind {
 }
 
 #[derive(Clone)]
+struct ParallelAttemptInfo {
+    label: SharedString,
+    sort_time: DateTime<Utc>,
+    sort_index: usize,
+}
+
+#[derive(Clone)]
 struct ThreadEntry {
     metadata: ThreadMetadata,
     icon: IconName,
@@ -359,6 +366,7 @@ struct ThreadEntry {
     highlight_positions: Vec<usize>,
     worktrees: Vec<ThreadItemWorktreeInfo>,
     diff_stats: DiffStats,
+    parallel_attempt: Option<ParallelAttemptInfo>,
 }
 
 #[derive(Clone)]
@@ -1621,6 +1629,7 @@ impl Sidebar {
                             highlight_positions: Vec::new(),
                             worktrees,
                             diff_stats: DiffStats::default(),
+                            parallel_attempt: None,
                         })
                     };
 
@@ -1790,12 +1799,6 @@ impl Sidebar {
                         notified_threads.remove(&thread.metadata.thread_id);
                     }
                 }
-
-                threads.sort_by(|a, b| {
-                    let a_time = Self::thread_display_time(&a.metadata);
-                    let b_time = Self::thread_display_time(&b.metadata);
-                    b_time.cmp(&a_time)
-                });
             } else {
                 for info in live_infos {
                     if info.status == AgentThreadStatus::Running {
@@ -1913,6 +1916,7 @@ impl Sidebar {
                 {
                     continue;
                 }
+                Self::order_parallel_attempt_threads(&mut matched_threads);
 
                 // Check for notifications: threads that completed while not active.
                 let has_thread_notifications = matched_threads
@@ -1942,6 +1946,7 @@ impl Sidebar {
                     &mut current_thread_ids,
                 );
             } else {
+                Self::order_parallel_attempt_threads(&mut threads);
                 let has_terminal_notifications = terminals
                     .iter()
                     .any(|t| notified_terminals.contains(&t.metadata.terminal_id));
@@ -5915,6 +5920,97 @@ impl Sidebar {
         metadata.interacted_at.unwrap_or(metadata.updated_at)
     }
 
+    fn thread_base_sort_time(thread: &ThreadEntry) -> DateTime<Utc> {
+        if thread.draft == Some(DraftKind::Empty) {
+            DateTime::<Utc>::MAX_UTC
+        } else {
+            Self::thread_display_time(&thread.metadata)
+        }
+    }
+
+    fn thread_sort_time(thread: &ThreadEntry) -> DateTime<Utc> {
+        thread.parallel_attempt.as_ref().map_or_else(
+            || Self::thread_base_sort_time(thread),
+            |info| info.sort_time,
+        )
+    }
+
+    fn parallel_attempt_cmp(left: &ThreadMetadata, right: &ThreadMetadata) -> Ordering {
+        match (left.created_at, right.created_at) {
+            (Some(left_created_at), Some(right_created_at))
+                if left_created_at != right_created_at =>
+            {
+                left_created_at.cmp(&right_created_at)
+            }
+            _ => left
+                .thread_id
+                .to_key_string()
+                .cmp(&right.thread_id.to_key_string()),
+        }
+    }
+
+    fn order_parallel_attempt_threads(threads: &mut [Arc<ThreadEntry>]) {
+        struct ParallelAttemptGroup {
+            indices: Vec<usize>,
+            sort_time: DateTime<Utc>,
+        }
+
+        let mut group_by_id: HashMap<String, ParallelAttemptGroup> = HashMap::new();
+        for (index, thread) in threads.iter().enumerate() {
+            let Some(group_id) = thread.metadata.parallel_attempt_group.as_ref() else {
+                continue;
+            };
+
+            let sort_time = Self::thread_base_sort_time(thread);
+            group_by_id
+                .entry(group_id.clone())
+                .and_modify(|group| {
+                    group.indices.push(index);
+                    group.sort_time = group.sort_time.max(sort_time);
+                })
+                .or_insert_with(|| ParallelAttemptGroup {
+                    indices: vec![index],
+                    sort_time,
+                });
+        }
+
+        for group in group_by_id.values().filter(|group| group.indices.len() > 1) {
+            let mut indices = group.indices.clone();
+            indices.sort_by(|left, right| {
+                Self::parallel_attempt_cmp(&threads[*left].metadata, &threads[*right].metadata)
+            });
+
+            let attempt_count = indices.len();
+            for (attempt_index, thread_index) in indices.into_iter().enumerate() {
+                let thread = Arc::make_mut(&mut threads[thread_index]);
+                thread.parallel_attempt = Some(ParallelAttemptInfo {
+                    label: format!("{}/{}", attempt_index + 1, attempt_count).into(),
+                    sort_time: group.sort_time,
+                    sort_index: attempt_index,
+                });
+            }
+        }
+
+        // Sorting by (time, group, attempt) keeps the comparator a total
+        // order even when timestamps tie exactly, which `sort_by` requires
+        // and which also guarantees group members stay contiguous.
+        fn thread_group_sort_key(thread: &ThreadEntry) -> (String, usize) {
+            match (
+                &thread.metadata.parallel_attempt_group,
+                &thread.parallel_attempt,
+            ) {
+                (Some(group_id), Some(info)) => (group_id.clone(), info.sort_index),
+                _ => (thread.metadata.thread_id.to_key_string(), 0),
+            }
+        }
+
+        threads.sort_by(|left, right| {
+            Self::thread_sort_time(right)
+                .cmp(&Self::thread_sort_time(left))
+                .then_with(|| thread_group_sort_key(left).cmp(&thread_group_sort_key(right)))
+        });
+    }
+
     fn push_entries_by_display_time(
         entries: &mut Vec<ListEntry>,
         terminals: Vec<TerminalEntry>,
@@ -5924,10 +6020,7 @@ impl Sidebar {
     ) {
         fn display_time(entry: &ListEntry) -> DateTime<Utc> {
             match entry {
-                ListEntry::Thread(thread) if thread.draft == Some(DraftKind::Empty) => {
-                    DateTime::<Utc>::MAX_UTC
-                }
-                ListEntry::Thread(thread) => Sidebar::thread_display_time(&thread.metadata),
+                ListEntry::Thread(thread) => Sidebar::thread_sort_time(thread),
                 ListEntry::Terminal(terminal) => terminal.metadata.created_at,
                 ListEntry::ProjectHeader { .. } => unreachable!(),
             }
@@ -6351,6 +6444,24 @@ impl Sidebar {
             SharedString::default()
         } else {
             format_history_entry_timestamp(Self::thread_display_time(&thread.metadata)).into()
+        };
+        let timestamp = if let Some(parallel_attempt_label) = thread
+            .parallel_attempt
+            .as_ref()
+            .map(|attempt| attempt.label.clone())
+        {
+            if timestamp.is_empty() {
+                parallel_attempt_label
+            } else {
+                format!(
+                    "{} · {}",
+                    parallel_attempt_label.as_ref(),
+                    timestamp.as_ref()
+                )
+                .into()
+            }
+        } else {
+            timestamp
         };
 
         let is_remote = thread.workspace.is_remote(cx);
