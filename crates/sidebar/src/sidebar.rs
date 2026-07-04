@@ -8,6 +8,11 @@ use agent_settings::AgentSettings;
 use agent_ui::terminal_thread_metadata_store::{
     TerminalThreadMetadata, TerminalThreadMetadataStore, terminal_title_prefix,
 };
+use agent_ui::thread_landing::{
+    merge_thread_changes_button_label, record_thread_landing_state,
+    summarize_create_thread_pull_request_error, summarize_create_thread_pull_request_result,
+    summarize_merge_thread_changes_error, summarize_merge_thread_changes_result,
+};
 use agent_ui::thread_metadata_store::{
     ThreadLandingState, ThreadMetadata, ThreadMetadataStore, WorktreePaths,
     worktree_info_from_thread_paths,
@@ -67,10 +72,14 @@ use workspace::{
     CloseWindow, FocusWorkspaceSidebar, MultiWorkspace, MultiWorkspaceEvent, NextProject,
     NextThread, Open, OpenMode, PreviousProject, PreviousThread, ProjectGroupKey, SaveIntent,
     Sidebar as WorkspaceSidebar, SidebarSide, Toast, ToggleWorkspaceSidebar, Workspace,
-    notifications::NotificationId, sidebar_side_context_menu,
+    notifications::{NotificationId, NotifyTaskExt},
+    sidebar_side_context_menu,
 };
 
-use git_ui::worktree_service::{RemoteBranchName, worktree_create_targets};
+use git_ui::project_diff::ProjectDiff;
+use git_ui::worktree_service::{
+    RemoteBranchName, ThreadWorktreeMergeTarget, worktree_create_targets,
+};
 use zed_actions::editor::{MoveDown, MoveUp};
 use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, OpenRecent};
 
@@ -368,6 +377,15 @@ struct ThreadEntry {
     worktrees: Vec<ThreadItemWorktreeInfo>,
     diff_stats: DiffStats,
     parallel_attempt: Option<ParallelAttemptInfo>,
+}
+
+#[derive(Clone)]
+struct ThreadLandingMenuOptions {
+    workspace: Entity<Workspace>,
+    review_target: ThreadWorktreeMergeTarget,
+    merge_targets: Vec<ThreadWorktreeMergeTarget>,
+    merge_label: String,
+    pull_request_target: Option<ThreadWorktreeMergeTarget>,
 }
 
 #[derive(Clone)]
@@ -815,6 +833,7 @@ pub struct Sidebar {
     draft_kinds: HashMap<ThreadId, DraftKind>,
     view: SidebarView,
     restoring_tasks: HashMap<agent_ui::ThreadId, Task<()>>,
+    thread_landing_tasks: HashMap<ThreadId, Task<()>>,
     recent_projects_popover_handle: PopoverMenuHandle<SidebarRecentProjects>,
     project_header_menu_handles: HashMap<usize, PopoverMenuHandle<ContextMenu>>,
     project_header_new_thread_menu_handles: HashMap<usize, PopoverMenuHandle<ContextMenu>>,
@@ -953,6 +972,7 @@ impl Sidebar {
             draft_kinds: HashMap::new(),
             view: SidebarView::default(),
             restoring_tasks: HashMap::new(),
+            thread_landing_tasks: HashMap::new(),
             recent_projects_popover_handle: PopoverMenuHandle::default(),
             project_header_menu_handles: HashMap::new(),
             project_header_new_thread_menu_handles: HashMap::new(),
@@ -5825,6 +5845,251 @@ impl Sidebar {
         }
     }
 
+    fn thread_worktree_review_target(
+        project: &Entity<project::Project>,
+        targets: &[ThreadWorktreeMergeTarget],
+        cx: &App,
+    ) -> Option<ThreadWorktreeMergeTarget> {
+        let active_repository = project.read(cx).active_repository(cx);
+        if let Some(active_repository) = active_repository
+            && let Some(target) = targets
+                .iter()
+                .find(|target| target.repository == active_repository)
+        {
+            return Some(target.clone());
+        }
+        targets.first().cloned()
+    }
+
+    fn thread_worktree_target_has_remote(target: &ThreadWorktreeMergeTarget, cx: &App) -> bool {
+        let snapshot = target.repository.read(cx).snapshot();
+        snapshot.remote_origin_url.is_some() || snapshot.remote_upstream_url.is_some()
+    }
+
+    fn thread_landing_menu_options(
+        &self,
+        thread: &ThreadEntry,
+        cx: &App,
+    ) -> Option<ThreadLandingMenuOptions> {
+        if thread.draft.is_some()
+            || matches!(
+                thread.status,
+                AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation
+            )
+            || self
+                .thread_landing_tasks
+                .contains_key(&thread.metadata.thread_id)
+        {
+            return None;
+        }
+
+        let ThreadEntryWorkspace::Open(workspace) = &thread.workspace else {
+            return None;
+        };
+
+        let project = workspace.read(cx).project().clone();
+        let targets = git_ui::worktree_service::thread_worktree_merge_targets(project.read(cx), cx);
+        let review_target = Self::thread_worktree_review_target(&project, &targets, cx)?;
+        let merge_label = merge_thread_changes_button_label(&targets)?;
+        let pull_request_target = Self::thread_worktree_target_has_remote(&review_target, cx)
+            .then(|| review_target.clone());
+
+        Some(ThreadLandingMenuOptions {
+            workspace: workspace.clone(),
+            review_target,
+            merge_targets: targets,
+            merge_label,
+            pull_request_target,
+        })
+    }
+
+    fn review_thread_branch_changes_from_sidebar(
+        &mut self,
+        metadata: ThreadMetadata,
+        workspace: Entity<Workspace>,
+        target: ThreadWorktreeMergeTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_thread(metadata, &workspace, false, window, cx);
+        Self::deploy_thread_branch_diff(workspace, target, window, cx);
+    }
+
+    fn deploy_thread_branch_diff(
+        workspace: Entity<Workspace>,
+        target: ThreadWorktreeMergeTarget,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let project = workspace.read(cx).project().clone();
+        let repository = target.repository;
+        if let Some(base_ref) = target.target_branch_name {
+            workspace.update(cx, |workspace, cx| {
+                ProjectDiff::deploy_branch_diff_with_base_ref(
+                    workspace,
+                    project,
+                    repository,
+                    SharedString::from(base_ref),
+                    window,
+                    cx,
+                );
+            });
+            return;
+        }
+
+        let default_branch =
+            repository.update(cx, |repository, _cx| repository.default_branch(true));
+        let workspace_weak = workspace.downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let base_ref = default_branch
+                    .await
+                    .map_err(|_| anyhow::anyhow!("default branch request was canceled"))??
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine default branch"))?;
+
+                workspace.update_in(cx, |workspace, window, cx| {
+                    ProjectDiff::deploy_branch_diff_with_base_ref(
+                        workspace, project, repository, base_ref, window, cx,
+                    );
+                })?;
+
+                anyhow::Ok(())
+            })
+            .detach_and_notify_err(workspace_weak, window, cx);
+    }
+
+    fn show_thread_landing_toast(
+        &self,
+        thread_id: ThreadId,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(workspace) = self.active_workspace(cx) {
+            workspace.update(cx, |workspace, cx| {
+                struct SidebarThreadLandingToast;
+                workspace.show_toast(
+                    Toast::new(
+                        NotificationId::composite::<SidebarThreadLandingToast>(
+                            thread_id.to_key_string(),
+                        ),
+                        message,
+                    )
+                    .autohide(),
+                    cx,
+                );
+            });
+        }
+    }
+
+    fn merge_thread_changes_from_sidebar(
+        &mut self,
+        thread_id: ThreadId,
+        targets: Vec<ThreadWorktreeMergeTarget>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread_landing_tasks.contains_key(&thread_id) {
+            return;
+        }
+
+        if targets.is_empty() {
+            self.show_thread_landing_toast(
+                thread_id,
+                "No linked git worktree found for this thread".to_string(),
+                cx,
+            );
+            return;
+        }
+
+        let task = cx.spawn(async move |this, cx| {
+            let result = git_ui::worktree_service::merge_thread_worktrees_into_base(targets, cx)
+                .await
+                .map(summarize_merge_thread_changes_result);
+            if let Err(error) = this.update(cx, |this, cx| {
+                this.thread_landing_tasks.remove(&thread_id);
+                let (message, merged) = match result {
+                    Ok(summary) => (summary.message, summary.offer_archive),
+                    Err(error) => (summarize_merge_thread_changes_error(&error), false),
+                };
+                if merged {
+                    record_thread_landing_state(thread_id, ThreadLandingState::Merged, cx);
+                }
+                this.show_thread_landing_toast(thread_id, message, cx);
+                cx.notify();
+            }) {
+                log::error!("failed to update sidebar after merging thread changes: {error:#}");
+            }
+        });
+        self.thread_landing_tasks.insert(thread_id, task);
+        cx.notify();
+    }
+
+    fn create_thread_pull_request_from_sidebar(
+        &mut self,
+        thread_id: ThreadId,
+        workspace: Entity<Workspace>,
+        target: ThreadWorktreeMergeTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread_landing_tasks.contains_key(&thread_id) {
+            return;
+        }
+
+        if !Self::thread_worktree_target_has_remote(&target, cx) {
+            self.show_thread_landing_toast(
+                thread_id,
+                "No remote configured for repository".to_string(),
+                cx,
+            );
+            return;
+        }
+
+        let askpass = git_ui::worktree_service::workspace_askpass_delegate(
+            workspace.downgrade(),
+            "git push",
+            window,
+            cx,
+        );
+        let task = cx.spawn(async move |this, cx| {
+            let result = git_ui::worktree_service::create_pull_request_for_thread_worktree(
+                target, askpass, cx,
+            )
+            .await;
+            if let Err(error) = this.update(cx, |this, cx| {
+                this.thread_landing_tasks.remove(&thread_id);
+                match result {
+                    Ok(result) => {
+                        cx.open_url(&result.url);
+                        record_thread_landing_state(
+                            thread_id,
+                            ThreadLandingState::PullRequested,
+                            cx,
+                        );
+                        this.show_thread_landing_toast(
+                            thread_id,
+                            summarize_create_thread_pull_request_result(&result),
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        this.show_thread_landing_toast(
+                            thread_id,
+                            summarize_create_thread_pull_request_error(&error),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            }) {
+                log::error!(
+                    "failed to update sidebar after creating thread pull request: {error:#}"
+                );
+            }
+        });
+        self.thread_landing_tasks.insert(thread_id, task);
+        cx.notify();
+    }
+
     fn archive_selected_thread(
         &mut self,
         _: &ArchiveSelectedThread,
@@ -6682,6 +6947,8 @@ impl Sidebar {
         let is_zed_thread = thread.metadata.agent_id.as_ref() == ZED_AGENT_ID.as_ref();
         let can_open_as_markdown = thread.is_live || is_zed_thread;
         let folder_paths = thread.metadata.folder_paths().clone();
+        let thread_for_landing = thread.clone();
+        let metadata_for_landing = thread.metadata.clone();
 
         right_click_menu(context_menu_id)
             .trigger(move |_, _, _| thread_item)
@@ -6697,6 +6964,14 @@ impl Sidebar {
                     let markdown_title = markdown_title.clone();
                     let rename_title = rename_title.clone();
                     let folder_paths = folder_paths.clone();
+                    let thread_for_landing = thread_for_landing.clone();
+                    let metadata_for_landing = metadata_for_landing.clone();
+                    let landing_options = sidebar
+                        .read_with(cx, |sidebar, cx| {
+                            sidebar.thread_landing_menu_options(&thread_for_landing, cx)
+                        })
+                        .ok()
+                        .flatten();
                     ContextMenu::build(_window, cx, move |mut menu, _window, _cx| {
                         menu = menu.entry("Rename Title", None, {
                             let sidebar = sidebar.clone();
@@ -6776,6 +7051,64 @@ impl Sidebar {
                                     }
                                 }
                             });
+                        }
+
+                        if let Some(landing_options) = landing_options {
+                            menu = menu.separator().entry("Review Changes", None, {
+                                let sidebar = sidebar.clone();
+                                let metadata = metadata_for_landing.clone();
+                                let workspace = landing_options.workspace.clone();
+                                let target = landing_options.review_target.clone();
+                                move |window, cx| {
+                                    sidebar
+                                        .update(cx, |sidebar, cx| {
+                                            sidebar.review_thread_branch_changes_from_sidebar(
+                                                metadata.clone(),
+                                                workspace.clone(),
+                                                target.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .ok();
+                                }
+                            });
+
+                            menu = menu.entry(landing_options.merge_label.clone(), None, {
+                                let sidebar = sidebar.clone();
+                                let targets = landing_options.merge_targets.clone();
+                                move |_window, cx| {
+                                    sidebar
+                                        .update(cx, |sidebar, cx| {
+                                            sidebar.merge_thread_changes_from_sidebar(
+                                                thread_id,
+                                                targets.clone(),
+                                                cx,
+                                            );
+                                        })
+                                        .ok();
+                                }
+                            });
+
+                            if let Some(target) = landing_options.pull_request_target.clone() {
+                                menu = menu.entry("Create PR", None, {
+                                    let sidebar = sidebar.clone();
+                                    let workspace = landing_options.workspace;
+                                    move |window, cx| {
+                                        sidebar
+                                            .update(cx, |sidebar, cx| {
+                                                sidebar.create_thread_pull_request_from_sidebar(
+                                                    thread_id,
+                                                    workspace.clone(),
+                                                    target.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })
+                                            .ok();
+                                    }
+                                });
+                            }
                         }
 
                         menu.separator().entry("Archive Thread", None, {

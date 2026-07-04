@@ -9268,6 +9268,22 @@ fn visible_thread_titles_and_metadata_labels(
     })
 }
 
+fn thread_entry_for_session(sidebar: &Sidebar, session_id: &acp::SessionId) -> ThreadEntry {
+    sidebar
+        .contents
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            ListEntry::Thread(thread)
+                if thread.metadata.session_id.as_ref() == Some(session_id) =>
+            {
+                Some(thread.as_ref().clone())
+            }
+            ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) | ListEntry::Thread(_) => None,
+        })
+        .expect("thread entry should exist")
+}
+
 #[gpui::test]
 async fn test_parallel_attempt_group_threads_are_contiguous_and_created_ordered(
     cx: &mut TestAppContext,
@@ -9402,6 +9418,181 @@ async fn test_thread_landing_indicator_is_rendered_in_metadata_slot(cx: &mut Tes
             ),
         ]
     );
+}
+
+#[gpui::test]
+async fn test_thread_landing_menu_options_for_open_linked_worktree(cx: &mut TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/project",
+        serde_json::json!({
+            ".git": {
+                "worktrees": {
+                    "feature-a": {
+                        "commondir": "../../",
+                        "HEAD": "ref: refs/heads/feature-a",
+                    },
+                },
+            },
+            "src": {},
+        }),
+    )
+    .await;
+    fs.insert_tree(
+        "/worktrees/project/feature-a/project",
+        serde_json::json!({
+            ".git": "gitdir: /project/.git/worktrees/feature-a",
+            "src": {},
+        }),
+    )
+    .await;
+    fs.add_linked_worktree_for_repo(
+        Path::new("/project/.git"),
+        false,
+        git::repository::Worktree {
+            path: PathBuf::from("/worktrees/project/feature-a/project"),
+            ref_name: Some("refs/heads/feature-a".into()),
+            sha: "aaa".into(),
+            is_main: false,
+            is_bare: false,
+        },
+    )
+    .await;
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+
+    let main_project = project::Project::test(fs.clone(), ["/project".as_ref()], cx).await;
+    let worktree_project = project::Project::test(
+        fs.clone(),
+        ["/worktrees/project/feature-a/project".as_ref()],
+        cx,
+    )
+    .await;
+    main_project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    worktree_project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(main_project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    multi_workspace.update_in(cx, |multi_workspace, window, cx| {
+        multi_workspace.test_add_workspace(worktree_project.clone(), window, cx);
+    });
+
+    let session_id = acp::SessionId::new(Arc::from("worktree-thread"));
+    save_thread_metadata(
+        session_id.clone(),
+        Some("Worktree Thread".into()),
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
+        None,
+        None,
+        &worktree_project,
+        cx,
+    );
+    refresh_sidebar_entries(&multi_workspace, cx);
+
+    sidebar.update(cx, |sidebar, cx| {
+        let thread = thread_entry_for_session(sidebar, &session_id);
+        assert!(matches!(thread.workspace, ThreadEntryWorkspace::Open(_)));
+        let options = sidebar
+            .thread_landing_menu_options(&thread, cx)
+            .expect("open linked worktree should have landing menu options");
+        assert_eq!(options.merge_targets.len(), 1);
+        assert!(options.merge_label.starts_with("Merge into "));
+        assert!(options.pull_request_target.is_none());
+
+        sidebar
+            .thread_landing_tasks
+            .insert(thread.metadata.thread_id, Task::ready(()));
+        assert!(
+            sidebar.thread_landing_menu_options(&thread, cx).is_none(),
+            "in-flight landing operation should hide landing menu options"
+        );
+        sidebar
+            .thread_landing_tasks
+            .remove(&thread.metadata.thread_id);
+    });
+}
+
+#[gpui::test]
+async fn test_thread_landing_menu_options_absent_for_closed_linked_worktree(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/project",
+        serde_json::json!({
+            ".git": {
+                "worktrees": {
+                    "feature-a": {
+                        "commondir": "../../",
+                        "HEAD": "ref: refs/heads/feature-a",
+                    },
+                },
+            },
+            "src": {},
+        }),
+    )
+    .await;
+    fs.insert_tree(
+        "/worktrees/project/feature-a/project",
+        serde_json::json!({
+            ".git": "gitdir: /project/.git/worktrees/feature-a",
+            "src": {},
+        }),
+    )
+    .await;
+    fs.add_linked_worktree_for_repo(
+        Path::new("/project/.git"),
+        false,
+        git::repository::Worktree {
+            path: PathBuf::from("/worktrees/project/feature-a/project"),
+            ref_name: Some("refs/heads/feature-a".into()),
+            sha: "aaa".into(),
+            is_main: false,
+            is_bare: false,
+        },
+    )
+    .await;
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+
+    let main_project = project::Project::test(fs.clone(), ["/project".as_ref()], cx).await;
+    main_project
+        .update(cx, |project, cx| project.git_scans_complete(cx))
+        .await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(main_project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    let session_id = acp::SessionId::new(Arc::from("worktree-thread"));
+    let worktree_folder_paths =
+        PathList::new(&[PathBuf::from("/worktrees/project/feature-a/project")]);
+    save_thread_metadata_with_main_paths(
+        "worktree-thread",
+        "Worktree Thread",
+        worktree_folder_paths.clone(),
+        PathList::new(&[PathBuf::from("/project")]),
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
+        cx,
+    );
+    refresh_sidebar_entries(&multi_workspace, cx);
+
+    sidebar.read_with(cx, |sidebar, cx| {
+        let thread = thread_entry_for_session(sidebar, &session_id);
+        match &thread.workspace {
+            ThreadEntryWorkspace::Closed { folder_paths, .. } => {
+                assert_eq!(folder_paths, &worktree_folder_paths);
+            }
+            ThreadEntryWorkspace::Open(_) => panic!("thread should be a closed worktree row"),
+        }
+        assert!(sidebar.thread_landing_menu_options(&thread, cx).is_none());
+    });
 }
 
 #[gpui::test]

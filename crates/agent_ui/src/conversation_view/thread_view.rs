@@ -3,6 +3,11 @@ use crate::{
     agent_configuration::configure_context_server_modal::default_markdown_style,
     conversation_view::thread_search_bar::{ThreadSearchBar, ThreadSearchBarEvent},
     open_abs_path_at_point,
+    thread_landing::{
+        merge_thread_changes_button_label, record_thread_landing_state,
+        summarize_create_thread_pull_request_error, summarize_create_thread_pull_request_result,
+        summarize_merge_thread_changes_error, summarize_merge_thread_changes_result,
+    },
     thread_metadata_store::{ThreadId, ThreadLandingState, ThreadMetadataStore},
 };
 use agent_client_protocol::schema::v1 as acp;
@@ -17,7 +22,6 @@ use agent_settings::UserAgentsMd;
 use agent_skills::MAX_SKILL_DESCRIPTION_LEN;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
-use git::repository::{MergeWorktreeIntoBaseResult, MergeWorktreeIntoBaseResultKind};
 use git_ui::project_diff::ProjectDiff;
 use notifications::status_toast::StatusToast;
 
@@ -743,11 +747,6 @@ pub fn open_markdown_in_workspace(
     })
 }
 
-struct MergeThreadChangesSummary {
-    message: String,
-    offer_archive: bool,
-}
-
 enum MergeThreadArchiveAction {
     SingleThread { session_id: String },
     ParallelAttempts { group: String },
@@ -758,73 +757,6 @@ impl MergeThreadArchiveAction {
         match self {
             Self::SingleThread { .. } => "Archive Thread",
             Self::ParallelAttempts { .. } => "Archive All Attempts",
-        }
-    }
-}
-
-fn summarize_merge_thread_changes_result(
-    results: Vec<MergeWorktreeIntoBaseResult>,
-) -> MergeThreadChangesSummary {
-    match results.as_slice() {
-        [] => MergeThreadChangesSummary {
-            message: "No linked git worktree found for this thread".to_string(),
-            offer_archive: false,
-        },
-        [result] => {
-            let checkpoint = if result.auto_committed {
-                " after checkpointing uncommitted changes"
-            } else {
-                ""
-            };
-            let message = match result.kind {
-                MergeWorktreeIntoBaseResultKind::FastForward => {
-                    format!(
-                        "Merged thread changes into {} with a fast-forward{}",
-                        result.target_branch_name, checkpoint
-                    )
-                }
-                MergeWorktreeIntoBaseResultKind::MergeCommit => {
-                    format!(
-                        "Merged thread changes into {}{}",
-                        result.target_branch_name, checkpoint
-                    )
-                }
-                MergeWorktreeIntoBaseResultKind::AlreadyUpToDate => {
-                    format!("Nothing to merge into {}", result.target_branch_name)
-                }
-            };
-            let offer_archive = matches!(
-                result.kind,
-                MergeWorktreeIntoBaseResultKind::FastForward
-                    | MergeWorktreeIntoBaseResultKind::MergeCommit
-            );
-            MergeThreadChangesSummary {
-                message,
-                offer_archive,
-            }
-        }
-        results => {
-            let merged_count = results
-                .iter()
-                .filter(|result| {
-                    !matches!(
-                        result.kind,
-                        MergeWorktreeIntoBaseResultKind::AlreadyUpToDate
-                    )
-                })
-                .count();
-            let message = if merged_count == 0 {
-                format!("Nothing to merge in {} repositories", results.len())
-            } else {
-                format!(
-                    "Merged thread changes in {merged_count}/{} repositories",
-                    results.len()
-                )
-            };
-            MergeThreadChangesSummary {
-                message,
-                offer_archive: merged_count > 0,
-            }
         }
     }
 }
@@ -2844,30 +2776,7 @@ impl ThreadView {
 
     fn merge_thread_changes_button_label(&self, cx: &App) -> Option<String> {
         let targets = self.thread_worktree_merge_targets(cx);
-        match targets.as_slice() {
-            [] => None,
-            [target] => Some(format!(
-                "Merge into {}",
-                target
-                    .target_branch_name
-                    .as_deref()
-                    .unwrap_or("base branch")
-            )),
-            targets => {
-                let first_branch_name = targets
-                    .first()
-                    .and_then(|target| target.target_branch_name.as_deref());
-                let same_branch_name = first_branch_name.filter(|branch_name| {
-                    targets
-                        .iter()
-                        .all(|target| target.target_branch_name.as_deref() == Some(*branch_name))
-                });
-                Some(match same_branch_name {
-                    Some(branch_name) => format!("Merge into {branch_name}"),
-                    None => "Merge into base branches".to_string(),
-                })
-            }
-        }
+        merge_thread_changes_button_label(&targets)
     }
 
     fn review_thread_branch_changes(
@@ -2956,7 +2865,7 @@ impl ThreadView {
                 this.merge_thread_changes_task = None;
                 let (message, offer_archive) = match result {
                     Ok(summary) => (summary.message, summary.offer_archive),
-                    Err(error) => (format!("Merge failed: {error:#}"), false),
+                    Err(error) => (summarize_merge_thread_changes_error(&error), false),
                 };
                 let archive_action =
                     offer_archive.then(|| this.merge_thread_archive_action(session_id.clone(), cx));
@@ -3017,22 +2926,14 @@ impl ThreadView {
                     Ok(result) => {
                         cx.open_url(&result.url);
                         this.set_thread_landing_state(ThreadLandingState::PullRequested, cx);
-                        let checkpoint = if result.checkpoint_created {
-                            " after checkpointing uncommitted changes"
-                        } else {
-                            ""
-                        };
                         this.show_thread_pull_request_toast(
-                            format!(
-                                "Pushed {}{} — opening pull request page",
-                                result.branch_name, checkpoint
-                            ),
+                            summarize_create_thread_pull_request_result(&result),
                             cx,
                         );
                     }
                     Err(error) => {
                         this.show_thread_pull_request_toast(
-                            format!("Create PR failed: {error:#}"),
+                            summarize_create_thread_pull_request_error(&error),
                             cx,
                         );
                     }
@@ -3048,11 +2949,7 @@ impl ThreadView {
     }
 
     fn set_thread_landing_state(&self, landed: ThreadLandingState, cx: &mut Context<Self>) {
-        if let Some(store) = ThreadMetadataStore::try_global(cx) {
-            store.update(cx, |store, cx| {
-                store.set_landing_state(self.root_thread_id, landed, cx);
-            });
-        }
+        record_thread_landing_state(self.root_thread_id, landed, cx);
     }
 
     fn show_merge_thread_changes_toast(
