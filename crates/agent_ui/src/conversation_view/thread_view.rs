@@ -1458,6 +1458,144 @@ impl ThreadView {
             && self.as_native_connection(cx).is_some()
     }
 
+    fn should_show_retry_in_new_worktree(&self, cx: &App) -> bool {
+        self.has_user_submitted_prompt(cx)
+            && self.project_has_git_repository(cx)
+            && self.sibling_thread_host(cx).is_some()
+    }
+
+    fn can_retry_in_new_worktree(&self, cx: &App) -> bool {
+        self.parallel_attempts_task.is_none() && self.should_show_retry_in_new_worktree(cx)
+    }
+
+    fn first_user_message_plain_text(&self, cx: &App) -> Option<String> {
+        let thread = self.thread.read(cx);
+        let first_user_message = thread.entries().iter().find_map(|entry| match entry {
+            AgentThreadEntry::UserMessage(message) => Some(message),
+            _ => None,
+        })?;
+        let prompt = first_user_message
+            .content
+            .to_markdown(cx)
+            .trim()
+            .to_string();
+        (!prompt.is_empty()).then_some(prompt)
+    }
+
+    fn retry_in_new_worktree(
+        &mut self,
+        _: &RetryInNewWorktree,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.parallel_attempts_task.is_some() {
+            return;
+        }
+
+        if !self.has_user_submitted_prompt(cx) {
+            self.show_parallel_attempts_toast(
+                "Retry needs a submitted first prompt".to_string(),
+                cx,
+            );
+            return;
+        }
+
+        if !self.project_has_git_repository(cx) {
+            self.show_parallel_attempts_toast(
+                "Retry in a fresh worktree needs a git repository in the project".to_string(),
+                cx,
+            );
+            return;
+        }
+
+        let Some(connection) = self.as_native_connection(cx) else {
+            self.show_parallel_attempts_toast(
+                "Retry in a fresh worktree is only available for native agent threads".to_string(),
+                cx,
+            );
+            return;
+        };
+        let Some(host) = connection.0.read(cx).sibling_thread_host() else {
+            self.show_parallel_attempts_toast(
+                "Retry in a fresh worktree is not available in this workspace".to_string(),
+                cx,
+            );
+            return;
+        };
+
+        let Some(prompt) = self.first_user_message_plain_text(cx) else {
+            self.show_parallel_attempts_toast(
+                "Could not find a non-empty first prompt for this thread".to_string(),
+                cx,
+            );
+            return;
+        };
+
+        let Some(metadata_store) = ThreadMetadataStore::try_global(cx) else {
+            self.show_parallel_attempts_toast(
+                "Could not access thread metadata for retry".to_string(),
+                cx,
+            );
+            return;
+        };
+
+        let existing_parallel_attempt_group = metadata_store
+            .read(cx)
+            .entry(self.root_thread_id)
+            .and_then(|metadata| metadata.parallel_attempt_group.clone());
+        let group_resolution = retry_parallel_attempt_group(
+            existing_parallel_attempt_group.as_deref(),
+            new_sibling_thread_run_identifier(),
+        );
+        let parallel_attempt_group = group_resolution.group.clone();
+        if group_resolution.assign_source {
+            metadata_store.update(cx, |store, cx| {
+                store.set_parallel_attempt_group(
+                    self.root_thread_id,
+                    parallel_attempt_group.clone(),
+                    cx,
+                );
+            });
+        }
+
+        let request = retry_in_new_worktree_request(
+            &prompt,
+            self.current_model_id(cx),
+            &parallel_attempt_group,
+            &new_sibling_thread_run_identifier(),
+        );
+        let window_handle = window.window_handle();
+
+        self.parallel_attempts_task = Some(cx.spawn(async move |this, cx| {
+            let result = host.create_sibling_thread(request, cx).await;
+            let updated = window_handle.update(cx, |_root, _window, cx| {
+                this.update(cx, |this, cx| {
+                    this.parallel_attempts_task = None;
+                    match result {
+                        Ok(_) => {
+                            this.show_parallel_attempts_toast(
+                                "Started retry in a fresh worktree".to_string(),
+                                cx,
+                            );
+                        }
+                        Err(error) => {
+                            this.show_parallel_attempts_toast(
+                                format!("Failed to start retry in a fresh worktree: {error:#}"),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                })
+            });
+
+            if let Err(error) = updated.and_then(|inner| inner) {
+                log::error!("failed to update thread view after retry in new worktree: {error:#}");
+            }
+        }));
+        cx.notify();
+    }
+
     fn send_isolated_new_thread_if_eligible(
         &mut self,
         window: &mut Window,
@@ -1494,12 +1632,7 @@ impl ThreadView {
             return false;
         };
 
-        let run_identifier = uuid::Uuid::new_v4()
-            .simple()
-            .to_string()
-            .chars()
-            .take(8)
-            .collect::<String>();
+        let run_identifier = new_sibling_thread_run_identifier();
         let request = isolated_thread_request(prompt, self.current_model_id(cx), &run_identifier);
         let message_editor = self.message_editor.clone();
         let window_handle = window.window_handle();
@@ -1577,12 +1710,7 @@ impl ThreadView {
             return;
         };
 
-        let run_identifier = uuid::Uuid::new_v4()
-            .simple()
-            .to_string()
-            .chars()
-            .take(8)
-            .collect::<String>();
+        let run_identifier = new_sibling_thread_run_identifier();
         let requests =
             parallel_attempt_requests(prompt, count, self.current_model_id(cx), &run_identifier);
         let message_editor = self.message_editor.clone();
@@ -6663,8 +6791,20 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let is_generating = matches!(thread.read(cx).status(), ThreadStatus::Generating);
+        let retry_in_new_worktree_button = self.render_retry_in_new_worktree_button(cx);
         if is_generating {
-            return Empty.into_any_element();
+            return retry_in_new_worktree_button
+                .map(|button| {
+                    h_flex()
+                        .w_full()
+                        .py_2()
+                        .px_5()
+                        .gap_px()
+                        .justify_end()
+                        .child(button)
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| Empty.into_any_element());
         }
 
         let open_as_markdown = IconButton::new("open-as-markdown", IconName::FileMarkdown)
@@ -6942,10 +7082,45 @@ impl ThreadView {
             .when_some(merge_thread_changes_button, |this, button| {
                 this.child(button)
             })
+            .when_some(retry_in_new_worktree_button, |this, button| {
+                this.child(button)
+            })
             .child(open_as_markdown)
             .child(scroll_to_recent_user_prompt)
             .child(scroll_to_top)
             .into_any_element()
+    }
+
+    fn render_retry_in_new_worktree_button(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if !self.should_show_retry_in_new_worktree(cx) {
+            return None;
+        }
+
+        let disabled = !self.can_retry_in_new_worktree(cx);
+        let focus_handle = self.focus_handle.clone();
+        Some(
+            IconButton::new("retry-in-new-worktree", IconName::RotateCw)
+                .shape(ui::IconButtonShape::Square)
+                .icon_size(IconSize::Small)
+                .icon_color(if disabled {
+                    Color::Muted
+                } else {
+                    Color::Ignored
+                })
+                .disabled(disabled)
+                .tooltip(move |_window, cx| {
+                    Tooltip::for_action_in(
+                        "Retry in New Worktree",
+                        &RetryInNewWorktree,
+                        &focus_handle,
+                        cx,
+                    )
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.retry_in_new_worktree(&RetryInNewWorktree, window, cx);
+                }))
+                .into_any_element(),
+        )
     }
 
     pub(crate) fn scroll_to_most_recent_user_prompt(&mut self, cx: &mut Context<Self>) {
@@ -11879,6 +12054,7 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::review_thread_branch_changes))
             .on_action(cx.listener(Self::create_thread_pull_request))
             .on_action(cx.listener(Self::merge_thread_changes))
+            .on_action(cx.listener(Self::retry_in_new_worktree))
             .on_action(cx.listener(Self::send_parallel_attempts))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
@@ -12250,6 +12426,38 @@ fn should_isolate_new_thread(eligibility: IsolatedNewThreadEligibility) -> bool 
         && eligibility.has_native_sibling_host
 }
 
+fn new_sibling_thread_run_identifier() -> String {
+    uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect::<String>()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RetryParallelAttemptGroupResolution {
+    group: String,
+    assign_source: bool,
+}
+
+fn retry_parallel_attempt_group(
+    existing_group: Option<&str>,
+    new_group: String,
+) -> RetryParallelAttemptGroupResolution {
+    if let Some(existing_group) = existing_group.filter(|group| !group.is_empty()) {
+        RetryParallelAttemptGroupResolution {
+            group: existing_group.to_string(),
+            assign_source: false,
+        }
+    } else {
+        RetryParallelAttemptGroupResolution {
+            group: new_group,
+            assign_source: true,
+        }
+    }
+}
+
 fn parallel_attempt_requests(
     prompt: &str,
     count: usize,
@@ -12274,6 +12482,24 @@ fn parallel_attempt_requests(
             base_ref: None,
         })
         .collect()
+}
+
+fn retry_in_new_worktree_request(
+    prompt: &str,
+    model: Option<String>,
+    parallel_attempt_group: &str,
+    run_identifier: &str,
+) -> agent::SiblingThreadRequest {
+    agent::SiblingThreadRequest {
+        title: prompt_title_prefix(prompt).into(),
+        prompt: prompt.to_string(),
+        agent_id: None,
+        model,
+        parallel_attempt_group: Some(parallel_attempt_group.to_string()),
+        use_new_worktree: true,
+        worktree_name: Some(isolated_thread_worktree_name(prompt, run_identifier)),
+        base_ref: None,
+    }
 }
 
 fn isolated_thread_request(
@@ -12496,6 +12722,55 @@ mod tests {
         );
         assert_ne!(request.worktree_name, second_request.worktree_name);
         assert_eq!(request.base_ref, None);
+    }
+
+    #[test]
+    fn test_retry_in_new_worktree_request_groups_without_title_suffix_and_uses_fresh_worktree_name()
+    {
+        let request = retry_in_new_worktree_request(
+            "Fix the project panel crash",
+            Some("provider/model".to_string()),
+            "previous",
+            "retry123",
+        );
+        let previous_run_worktree_name =
+            parallel_attempt_worktree_name("Fix the project panel crash", 1, 2, "previous");
+
+        assert_eq!(request.title.as_ref(), "Fix the project panel crash");
+        assert!(!request.title.as_ref().contains("attempt"));
+        assert_eq!(request.prompt, "Fix the project panel crash");
+        assert_eq!(request.agent_id, None);
+        assert_eq!(request.model, Some("provider/model".to_string()));
+        assert_eq!(request.parallel_attempt_group, Some("previous".to_string()));
+        assert!(request.use_new_worktree);
+        assert_eq!(
+            request.worktree_name,
+            Some("fix-the-project-panel-crash-retry123".to_string())
+        );
+        assert_ne!(request.worktree_name, Some(previous_run_worktree_name));
+        assert_eq!(request.base_ref, None);
+    }
+
+    #[test]
+    fn test_retry_parallel_attempt_group_reuses_existing_group() {
+        assert_eq!(
+            retry_parallel_attempt_group(Some("existing"), "new123".to_string()),
+            RetryParallelAttemptGroupResolution {
+                group: "existing".to_string(),
+                assign_source: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_retry_parallel_attempt_group_assigns_new_group_when_absent() {
+        assert_eq!(
+            retry_parallel_attempt_group(None, "new123".to_string()),
+            RetryParallelAttemptGroupResolution {
+                group: "new123".to_string(),
+                assign_source: true,
+            }
+        );
     }
 
     #[test]

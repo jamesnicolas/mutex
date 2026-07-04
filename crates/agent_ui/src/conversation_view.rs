@@ -95,12 +95,12 @@ use crate::{
     ArchiveThread, AuthorizeToolCall, ClearMessageQueue, CreateThreadPullRequest,
     CycleFavoriteModels, CycleModeSelector, CycleThinkingEffort, EditFirstQueuedMessage,
     ExpandMessageEditor, Follow, KeepAll, MergeThreadChanges, NewThread, OpenAddContextMenu,
-    OpenAgentDiff, RejectAll, RejectOnce, RemoveFirstQueuedMessage, ReviewThreadBranchChanges,
-    ScrollOutputLineDown, ScrollOutputLineUp, ScrollOutputPageDown, ScrollOutputPageUp,
-    ScrollOutputToBottom, ScrollOutputToNextMessage, ScrollOutputToPreviousMessage,
-    ScrollOutputToTop, SendImmediately, SendNextQueuedMessage, SendParallelAttempts,
-    ToggleFastMode, ToggleProfileSelector, ToggleThinkingEffortMenu, ToggleThinkingMode,
-    UndoLastReject,
+    OpenAgentDiff, RejectAll, RejectOnce, RemoveFirstQueuedMessage, RetryInNewWorktree,
+    ReviewThreadBranchChanges, ScrollOutputLineDown, ScrollOutputLineUp, ScrollOutputPageDown,
+    ScrollOutputPageUp, ScrollOutputToBottom, ScrollOutputToNextMessage,
+    ScrollOutputToPreviousMessage, ScrollOutputToTop, SendImmediately, SendNextQueuedMessage,
+    SendParallelAttempts, ToggleFastMode, ToggleProfileSelector, ToggleThinkingEffortMenu,
+    ToggleThinkingMode, UndoLastReject,
 };
 
 const STOPWATCH_THRESHOLD: Duration = Duration::from_secs(30);

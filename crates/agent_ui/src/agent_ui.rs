@@ -207,6 +207,8 @@ actions!(
         CreateThreadPullRequest,
         /// Opens a diff of the current thread's linked-worktree branch against its merge target.
         ReviewThreadBranchChanges,
+        /// Creates a fresh worktree thread that re-runs this thread's first prompt, grouped with this thread as attempts.
+        RetryInNewWorktree,
         /// Removes the currently selected thread.
         RemoveSelectedThread,
         /// Renames the currently selected thread.
