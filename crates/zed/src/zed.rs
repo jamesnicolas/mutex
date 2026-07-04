@@ -2997,7 +2997,6 @@ mod tests {
         };
         cx.update({
             let fs = app_state.fs.clone();
-            let window = window.clone();
             move |cx| {
                 cx.spawn(async move |mut cx| {
                     workspace::apply_restored_multiworkspace_state(
