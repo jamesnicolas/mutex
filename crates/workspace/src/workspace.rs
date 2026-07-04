@@ -11235,6 +11235,7 @@ mod tests {
     #[gpui::test]
     async fn test_tab_disambiguation(cx: &mut TestAppContext) {
         init_test(cx);
+        set_editor_layout(cx);
 
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, [], cx).await;
@@ -16019,6 +16020,21 @@ mod tests {
             cx.set_global(settings_store);
             cx.set_global(db::AppDatabase::test_new());
             theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+    }
+
+    fn set_editor_layout(cx: &mut TestAppContext) {
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |content| {
+                content.agent.get_or_insert_default().dock = Some(settings::DockPosition::Right);
+                content.project_panel.get_or_insert_default().dock =
+                    Some(settings::DockSide::Left);
+                content.outline_panel.get_or_insert_default().dock = Some(settings::DockSide::Left);
+                content.collaboration_panel.get_or_insert_default().dock =
+                    Some(settings::DockPosition::Left);
+                content.git_panel.get_or_insert_default().dock =
+                    Some(settings::DockPosition::Left);
+            });
         });
     }
 

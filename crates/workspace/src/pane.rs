@@ -8837,6 +8837,22 @@ mod tests {
             cx.set_global(settings_store);
             theme_settings::init(LoadThemes::JustBase, cx);
         });
+        set_editor_layout(cx);
+    }
+
+    fn set_editor_layout(cx: &mut TestAppContext) {
+        cx.update_global(|store: &mut SettingsStore, cx| {
+            store.update_user_settings(cx, |content| {
+                content.agent.get_or_insert_default().dock = Some(settings::DockPosition::Right);
+                content.project_panel.get_or_insert_default().dock =
+                    Some(settings::DockSide::Left);
+                content.outline_panel.get_or_insert_default().dock = Some(settings::DockSide::Left);
+                content.collaboration_panel.get_or_insert_default().dock =
+                    Some(settings::DockPosition::Left);
+                content.git_panel.get_or_insert_default().dock =
+                    Some(settings::DockPosition::Left);
+            });
+        });
     }
 
     fn set_max_tabs(cx: &mut TestAppContext, value: Option<usize>) {
