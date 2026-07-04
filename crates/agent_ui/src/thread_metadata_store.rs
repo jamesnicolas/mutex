@@ -57,6 +57,29 @@ impl Column for ThreadId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadLandingState {
+    Merged,
+    PullRequested,
+}
+
+impl ThreadLandingState {
+    fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "merged" => Some(Self::Merged),
+            "pull_requested" => Some(Self::PullRequested),
+            _ => None,
+        }
+    }
+
+    fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Merged => "merged",
+            Self::PullRequested => "pull_requested",
+        }
+    }
+}
+
 const THREAD_REMOTE_CONNECTION_MIGRATION_KEY: &str = "thread-metadata-remote-connection-backfill";
 const THREAD_ID_MIGRATION_KEY: &str = "thread-metadata-thread-id-backfill";
 
@@ -137,6 +160,7 @@ fn migrate_thread_metadata(cx: &mut App) -> Task<anyhow::Result<()>> {
                         },
                         title_override: None,
                         parallel_attempt_group: None,
+                        landed: None,
                         updated_at: entry.updated_at,
                         created_at: entry.created_at,
                         interacted_at: None,
@@ -317,6 +341,7 @@ pub struct ThreadMetadata {
     /// (e.g. from `SessionInfoUpdate`) don't clobber the user's choice.
     pub title_override: Option<SharedString>,
     pub parallel_attempt_group: Option<String>,
+    pub landed: Option<ThreadLandingState>,
     pub updated_at: DateTime<Utc>,
     pub created_at: Option<DateTime<Utc>>,
     /// When a user last interacted to send a message (including queueing).
@@ -760,6 +785,31 @@ impl ThreadMetadataStore {
             self.pending_parallel_attempt_groups
                 .insert(thread_id, parallel_attempt_group);
         }
+    }
+
+    pub fn set_landing_state(
+        &mut self,
+        thread_id: ThreadId,
+        landed: ThreadLandingState,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(existing) = self.entry(thread_id) else {
+            return;
+        };
+        let landed = match (existing.landed, landed) {
+            (Some(ThreadLandingState::Merged), ThreadLandingState::PullRequested) => {
+                ThreadLandingState::Merged
+            }
+            _ => landed,
+        };
+        if existing.landed == Some(landed) {
+            return;
+        }
+        let metadata = ThreadMetadata {
+            landed: Some(landed),
+            ..existing.clone()
+        };
+        self.save(metadata, cx);
     }
 
     fn save_internal(&mut self, metadata: ThreadMetadata) {
@@ -1318,6 +1368,7 @@ impl ThreadMetadataStore {
         let title_override = existing_thread.and_then(|t| t.title_override.clone());
         let existing_parallel_attempt_group =
             existing_thread.and_then(|t| t.parallel_attempt_group.clone());
+        let existing_landed = existing_thread.and_then(|t| t.landed);
 
         let updated_at = Utc::now();
 
@@ -1376,6 +1427,7 @@ impl ThreadMetadataStore {
             title,
             title_override,
             parallel_attempt_group,
+            landed: existing_landed,
             created_at: Some(created_at),
             interacted_at,
             updated_at,
@@ -1497,6 +1549,9 @@ impl Domain for ThreadMetadataDb {
         sql!(
             ALTER TABLE sidebar_threads ADD COLUMN parallel_attempt_group TEXT;
         ),
+        sql!(
+            ALTER TABLE sidebar_threads ADD COLUMN landed TEXT;
+        ),
     ];
 }
 
@@ -1513,7 +1568,7 @@ impl ThreadMetadataDb {
 
     const LIST_QUERY: &str = "SELECT thread_id, session_id, agent_id, title, updated_at, \
         created_at, interacted_at, folder_paths, folder_paths_order, archived, main_worktree_paths, \
-        main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group \
+        main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group, landed \
         FROM sidebar_threads \
         ORDER BY updated_at DESC";
 
@@ -1565,12 +1620,13 @@ impl ThreadMetadataDb {
             .context("serialize thread metadata remote connection")?;
         let title_override = row.title_override.as_ref().map(|t| t.to_string());
         let parallel_attempt_group = row.parallel_attempt_group.clone();
+        let landed = row.landed.map(|landed| landed.as_db_value().to_string());
         let thread_id = row.thread_id;
         let archived = row.archived;
 
         self.write(move |conn| {
-            let sql = "INSERT INTO sidebar_threads(thread_id, session_id, agent_id, title, updated_at, created_at, interacted_at, folder_paths, folder_paths_order, archived, main_worktree_paths, main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group) \
-                       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+            let sql = "INSERT INTO sidebar_threads(thread_id, session_id, agent_id, title, updated_at, created_at, interacted_at, folder_paths, folder_paths_order, archived, main_worktree_paths, main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group, landed) \
+                       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
                        ON CONFLICT(thread_id) DO UPDATE SET \
                            session_id = excluded.session_id, \
                            agent_id = excluded.agent_id, \
@@ -1585,7 +1641,8 @@ impl ThreadMetadataDb {
                            main_worktree_paths_order = excluded.main_worktree_paths_order, \
                            remote_connection = excluded.remote_connection, \
                            title_override = excluded.title_override, \
-                           parallel_attempt_group = excluded.parallel_attempt_group";
+                           parallel_attempt_group = excluded.parallel_attempt_group, \
+                           landed = excluded.landed";
             let mut stmt = Statement::prepare(conn, sql)?;
             let mut i = stmt.bind(&thread_id, 1)?;
             i = stmt.bind(&session_id, i)?;
@@ -1601,7 +1658,8 @@ impl ThreadMetadataDb {
             i = stmt.bind(&main_worktree_paths_order, i)?;
             i = stmt.bind(&remote_connection, i)?;
             i = stmt.bind(&title_override, i)?;
-            stmt.bind(&parallel_attempt_group, i)?;
+            i = stmt.bind(&parallel_attempt_group, i)?;
+            stmt.bind(&landed, i)?;
             stmt.exec()
         })
         .await
@@ -1761,6 +1819,7 @@ impl Column for ThreadMetadata {
         let (title_override, next): (Option<String>, i32) = Column::column(statement, next)?;
         let (parallel_attempt_group, next): (Option<String>, i32) =
             Column::column(statement, next)?;
+        let (landed, next): (Option<String>, i32) = Column::column(statement, next)?;
 
         let agent_id = agent_id
             .map(|id| AgentId::new(id))
@@ -1822,6 +1881,9 @@ impl Column for ThreadMetadata {
                     .filter(|t| !t.is_empty())
                     .map(SharedString::from),
                 parallel_attempt_group: parallel_attempt_group.filter(|group| !group.is_empty()),
+                landed: landed
+                    .as_deref()
+                    .and_then(ThreadLandingState::from_db_value),
                 updated_at,
                 created_at,
                 interacted_at,
@@ -1914,6 +1976,7 @@ mod tests {
             },
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at,
             created_at: Some(updated_at),
             interacted_at: None,
@@ -1989,7 +2052,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_database_round_trips_title_override(_cx: &mut TestAppContext) {
+    async fn test_database_round_trips_thread_metadata_fields(_cx: &mut TestAppContext) {
         let now = Utc::now();
         let mut metadata = make_metadata(
             "session-1",
@@ -1999,6 +2062,21 @@ mod tests {
         );
         metadata.title_override = Some("User Title".into());
         metadata.parallel_attempt_group = Some("attempt-run".to_string());
+        metadata.landed = Some(ThreadLandingState::Merged);
+        let mut pull_requested_metadata = make_metadata(
+            "session-2",
+            "Pull Requested Thread",
+            now - chrono::Duration::seconds(1),
+            PathList::new(&[Path::new("/project-b")]),
+        );
+        pull_requested_metadata.landed = Some(ThreadLandingState::PullRequested);
+        let mut merged_metadata = make_metadata(
+            "session-3",
+            "Merged Thread",
+            now - chrono::Duration::seconds(2),
+            PathList::new(&[Path::new("/project-c")]),
+        );
+        merged_metadata.landed = Some(ThreadLandingState::Merged);
 
         let thread = std::thread::current();
         let test_name = thread.name().unwrap_or("unknown_test");
@@ -2007,17 +2085,101 @@ mod tests {
             &db_name,
         )));
 
+        let thread_id = metadata.thread_id;
         db.save(metadata).await.unwrap();
+        db.save(pull_requested_metadata).await.unwrap();
+        db.save(merged_metadata).await.unwrap();
+        db.write(move |conn| {
+            let mut stmt = Statement::prepare(
+                conn,
+                "UPDATE sidebar_threads SET landed = ? WHERE thread_id = ?",
+            )?;
+            let next_index = stmt.bind(&"future_state", 1)?;
+            stmt.bind(&thread_id, next_index)?;
+            stmt.exec()
+        })
+        .await
+        .unwrap();
 
         let rows = db.list().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].title.as_deref(), Some("Agent Generated Title"));
-        assert_eq!(rows[0].title_override.as_deref(), Some("User Title"));
+        assert_eq!(rows.len(), 3);
+        let title_override_row = rows
+            .iter()
+            .find(|row| {
+                row.session_id
+                    .as_ref()
+                    .is_some_and(|id| id.0.as_ref() == "session-1")
+            })
+            .expect("title override row should exist");
         assert_eq!(
-            rows[0].parallel_attempt_group.as_deref(),
+            title_override_row.title.as_deref(),
+            Some("Agent Generated Title")
+        );
+        assert_eq!(
+            title_override_row.title_override.as_deref(),
+            Some("User Title")
+        );
+        assert_eq!(
+            title_override_row.parallel_attempt_group.as_deref(),
             Some("attempt-run")
         );
-        assert_eq!(rows[0].title().as_deref(), Some("User Title"));
+        assert_eq!(title_override_row.landed, None);
+        assert_eq!(title_override_row.title().as_deref(), Some("User Title"));
+
+        let pull_requested_row = rows
+            .iter()
+            .find(|row| {
+                row.session_id
+                    .as_ref()
+                    .is_some_and(|id| id.0.as_ref() == "session-2")
+            })
+            .expect("pull requested row should exist");
+        assert_eq!(
+            pull_requested_row.landed,
+            Some(ThreadLandingState::PullRequested)
+        );
+
+        let merged_row = rows
+            .iter()
+            .find(|row| {
+                row.session_id
+                    .as_ref()
+                    .is_some_and(|id| id.0.as_ref() == "session-3")
+            })
+            .expect("merged row should exist");
+        assert_eq!(merged_row.landed, Some(ThreadLandingState::Merged));
+    }
+
+    #[gpui::test]
+    async fn test_store_set_landing_state_keeps_merged_terminal(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let metadata = make_metadata(
+            "session-1",
+            "Agent Generated Title",
+            Utc::now(),
+            PathList::default(),
+        );
+        let thread_id = metadata.thread_id;
+
+        cx.update(|cx| {
+            let store = ThreadMetadataStore::global(cx);
+            store.update(cx, |store, cx| {
+                store.save(metadata, cx);
+                store.set_landing_state(thread_id, ThreadLandingState::PullRequested, cx);
+                store.set_landing_state(thread_id, ThreadLandingState::Merged, cx);
+                store.set_landing_state(thread_id, ThreadLandingState::PullRequested, cx);
+            });
+        });
+
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let store = ThreadMetadataStore::global(cx);
+            let store = store.read(cx);
+            let metadata = store.entry(thread_id).expect("metadata should be cached");
+            assert_eq!(metadata.landed, Some(ThreadLandingState::Merged));
+        });
     }
 
     #[gpui::test]
@@ -2213,6 +2375,7 @@ mod tests {
             title: Some("First Thread".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: updated_time,
             created_at: Some(updated_time),
             interacted_at: None,
@@ -2299,6 +2462,7 @@ mod tests {
             title: Some("Existing Metadata".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: now - chrono::Duration::seconds(10),
             created_at: Some(now - chrono::Duration::seconds(10)),
             interacted_at: None,
@@ -2426,6 +2590,7 @@ mod tests {
             title: Some("Existing Metadata".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: existing_updated_at,
             created_at: Some(existing_updated_at),
             interacted_at: None,
@@ -3172,6 +3337,7 @@ mod tests {
             title: Some("Local Linked".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: now,
             created_at: Some(now),
             interacted_at: None,
@@ -3187,6 +3353,7 @@ mod tests {
             title: Some("Remote Linked".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: now - chrono::Duration::seconds(1),
             created_at: Some(now - chrono::Duration::seconds(1)),
             interacted_at: None,

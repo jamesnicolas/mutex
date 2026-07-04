@@ -9,7 +9,8 @@ use agent_ui::terminal_thread_metadata_store::{
     TerminalThreadMetadata, TerminalThreadMetadataStore, terminal_title_prefix,
 };
 use agent_ui::thread_metadata_store::{
-    ThreadMetadata, ThreadMetadataStore, WorktreePaths, worktree_info_from_thread_paths,
+    ThreadLandingState, ThreadMetadata, ThreadMetadataStore, WorktreePaths,
+    worktree_info_from_thread_paths,
 };
 use agent_ui::threads_archive_view::{
     ThreadsArchiveView, ThreadsArchiveViewEvent, format_history_entry_timestamp,
@@ -5920,6 +5921,36 @@ impl Sidebar {
         metadata.interacted_at.unwrap_or(metadata.updated_at)
     }
 
+    fn thread_landing_state_label(landed: ThreadLandingState) -> &'static str {
+        match landed {
+            ThreadLandingState::Merged => "Merged",
+            ThreadLandingState::PullRequested => "PR",
+        }
+    }
+
+    fn thread_metadata_timestamp(thread: &ThreadEntry) -> SharedString {
+        let mut labels = Vec::new();
+        if let Some(parallel_attempt_label) = thread
+            .parallel_attempt
+            .as_ref()
+            .map(|attempt| attempt.label.to_string())
+        {
+            labels.push(parallel_attempt_label);
+        }
+        if let Some(landed) = thread.metadata.landed {
+            labels.push(Self::thread_landing_state_label(landed).to_string());
+        }
+        if thread.draft != Some(DraftKind::Empty) {
+            let timestamp =
+                format_history_entry_timestamp(Self::thread_display_time(&thread.metadata));
+            if !timestamp.is_empty() {
+                labels.push(timestamp);
+            }
+        }
+
+        labels.join(" · ").into()
+    }
+
     fn thread_base_sort_time(thread: &ThreadEntry) -> DateTime<Utc> {
         if thread.draft == Some(DraftKind::Empty) {
             DateTime::<Utc>::MAX_UTC
@@ -6421,7 +6452,6 @@ impl Sidebar {
         let is_hovered = self.hovered_thread_index == Some(ix);
         let is_selected = is_active;
         let is_draft = thread.draft.is_some();
-        let is_empty_draft = thread.draft == Some(DraftKind::Empty);
         let is_running = matches!(
             thread.status,
             AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation
@@ -6440,29 +6470,7 @@ impl Sidebar {
             .title_bar_background
             .blend(color.panel_background.opacity(0.25));
 
-        let timestamp: SharedString = if is_empty_draft {
-            SharedString::default()
-        } else {
-            format_history_entry_timestamp(Self::thread_display_time(&thread.metadata)).into()
-        };
-        let timestamp = if let Some(parallel_attempt_label) = thread
-            .parallel_attempt
-            .as_ref()
-            .map(|attempt| attempt.label.clone())
-        {
-            if timestamp.is_empty() {
-                parallel_attempt_label
-            } else {
-                format!(
-                    "{} · {}",
-                    parallel_attempt_label.as_ref(),
-                    timestamp.as_ref()
-                )
-                .into()
-            }
-        } else {
-            timestamp
-        };
+        let timestamp = Self::thread_metadata_timestamp(thread);
 
         let is_remote = thread.workspace.is_remote(cx);
 

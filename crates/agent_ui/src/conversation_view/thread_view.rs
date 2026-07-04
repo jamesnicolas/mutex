@@ -3,7 +3,7 @@ use crate::{
     agent_configuration::configure_context_server_modal::default_markdown_style,
     conversation_view::thread_search_bar::{ThreadSearchBar, ThreadSearchBarEvent},
     open_abs_path_at_point,
-    thread_metadata_store::{ThreadId, ThreadMetadataStore},
+    thread_metadata_store::{ThreadId, ThreadLandingState, ThreadMetadataStore},
 };
 use agent_client_protocol::schema::v1 as acp;
 use std::cell::RefCell;
@@ -2960,6 +2960,9 @@ impl ThreadView {
                 };
                 let archive_action =
                     offer_archive.then(|| this.merge_thread_archive_action(session_id.clone(), cx));
+                if offer_archive {
+                    this.set_thread_landing_state(ThreadLandingState::Merged, cx);
+                }
                 this.show_merge_thread_changes_toast(message, archive_action, cx);
                 cx.notify();
             }) {
@@ -3013,6 +3016,7 @@ impl ThreadView {
                 match result {
                     Ok(result) => {
                         cx.open_url(&result.url);
+                        this.set_thread_landing_state(ThreadLandingState::PullRequested, cx);
                         let checkpoint = if result.checkpoint_created {
                             " after checkpointing uncommitted changes"
                         } else {
@@ -3041,6 +3045,14 @@ impl ThreadView {
             }
         }));
         cx.notify();
+    }
+
+    fn set_thread_landing_state(&self, landed: ThreadLandingState, cx: &mut Context<Self>) {
+        if let Some(store) = ThreadMetadataStore::try_global(cx) {
+            store.update(cx, |store, cx| {
+                store.set_landing_state(self.root_thread_id, landed, cx);
+            });
+        }
     }
 
     fn show_merge_thread_changes_toast(

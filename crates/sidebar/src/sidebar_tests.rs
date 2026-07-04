@@ -10,7 +10,7 @@ use agent_ui::{
         active_session_id, active_thread_id, open_thread_with_connection,
         open_thread_with_custom_connection, send_message,
     },
-    thread_metadata_store::{ThreadMetadata, WorktreePaths},
+    thread_metadata_store::{ThreadLandingState, ThreadMetadata, WorktreePaths},
 };
 use chrono::DateTime;
 use fs::{FakeFs, Fs};
@@ -422,6 +422,30 @@ fn save_thread_metadata_with_parallel_attempt_group(
     project: &Entity<project::Project>,
     cx: &mut TestAppContext,
 ) {
+    save_thread_metadata_with_parallel_attempt_group_and_landing_state(
+        session_id,
+        title,
+        updated_at,
+        created_at,
+        interacted_at,
+        parallel_attempt_group,
+        None,
+        project,
+        cx,
+    );
+}
+
+fn save_thread_metadata_with_parallel_attempt_group_and_landing_state(
+    session_id: acp::SessionId,
+    title: Option<SharedString>,
+    updated_at: DateTime<Utc>,
+    created_at: Option<DateTime<Utc>>,
+    interacted_at: Option<DateTime<Utc>>,
+    parallel_attempt_group: Option<&str>,
+    landed: Option<ThreadLandingState>,
+    project: &Entity<project::Project>,
+    cx: &mut TestAppContext,
+) {
     cx.update(|cx| {
         let worktree_paths = project.read(cx).worktree_paths(cx);
         let remote_connection = project.read(cx).remote_connection_options(cx);
@@ -438,6 +462,7 @@ fn save_thread_metadata_with_parallel_attempt_group(
             title,
             title_override: None,
             parallel_attempt_group: parallel_attempt_group.map(str::to_string),
+            landed,
             updated_at,
             created_at,
             interacted_at,
@@ -475,6 +500,7 @@ fn save_thread_metadata_with_main_paths(
         title: Some(title),
         title_override: None,
         parallel_attempt_group: None,
+        landed: None,
         updated_at,
         created_at: None,
         interacted_at: None,
@@ -498,6 +524,30 @@ fn save_thread_metadata_with_paths_and_parallel_attempt_group(
     parallel_attempt_group: Option<&str>,
     cx: &mut TestAppContext,
 ) {
+    save_thread_metadata_with_paths_parallel_attempt_group_and_landing_state(
+        session_id,
+        title,
+        folder_paths,
+        main_worktree_paths,
+        updated_at,
+        created_at,
+        parallel_attempt_group,
+        None,
+        cx,
+    );
+}
+
+fn save_thread_metadata_with_paths_parallel_attempt_group_and_landing_state(
+    session_id: acp::SessionId,
+    title: SharedString,
+    folder_paths: PathList,
+    main_worktree_paths: PathList,
+    updated_at: DateTime<Utc>,
+    created_at: Option<DateTime<Utc>>,
+    parallel_attempt_group: Option<&str>,
+    landed: Option<ThreadLandingState>,
+    cx: &mut TestAppContext,
+) {
     let thread_id = cx.update(|cx| {
         ThreadMetadataStore::global(cx)
             .read(cx)
@@ -513,6 +563,7 @@ fn save_thread_metadata_with_paths_and_parallel_attempt_group(
         title: Some(title),
         title_override: None,
         parallel_attempt_group: parallel_attempt_group.map(str::to_string),
+        landed,
         updated_at,
         created_at,
         interacted_at: None,
@@ -541,6 +592,7 @@ fn save_draft_metadata_with_main_paths(
         title,
         title_override: None,
         parallel_attempt_group: None,
+        landed: None,
         updated_at,
         created_at: None,
         interacted_at: None,
@@ -1178,6 +1230,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     title: Some("Completed thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     interacted_at: None,
@@ -1207,6 +1260,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     title: Some("Running thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     interacted_at: None,
@@ -1236,6 +1290,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     title: Some("Error thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     interacted_at: None,
@@ -1266,6 +1321,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     title: Some("Waiting thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     interacted_at: None,
@@ -1296,6 +1352,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     title: Some("Notified thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     interacted_at: None,
@@ -7507,6 +7564,7 @@ async fn test_sidebar_keeps_multi_root_thread_with_stale_main_paths(cx: &mut Tes
                     title: Some("Stale Multi-Root Thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: None,
                     interacted_at: None,
@@ -7589,6 +7647,7 @@ async fn test_activate_archived_thread_with_saved_paths_activates_matching_works
                 title: Some("Archived Thread".into()),
                 title_override: None,
                 parallel_attempt_group: None,
+                landed: None,
                 updated_at: Utc::now(),
                 created_at: None,
                 interacted_at: None,
@@ -7660,6 +7719,7 @@ async fn test_activate_archived_thread_cwd_fallback_with_matching_workspace(
                 title: Some("CWD Thread".into()),
                 title_override: None,
                 parallel_attempt_group: None,
+                landed: None,
                 updated_at: Utc::now(),
                 created_at: None,
                 interacted_at: None,
@@ -7729,6 +7789,7 @@ async fn test_activate_archived_thread_no_paths_no_cwd_uses_active_workspace(
                 title: Some("Contextless Thread".into()),
                 title_override: None,
                 parallel_attempt_group: None,
+                landed: None,
                 updated_at: Utc::now(),
                 created_at: None,
                 interacted_at: None,
@@ -7788,6 +7849,7 @@ async fn test_activate_archived_thread_saved_paths_opens_new_workspace(cx: &mut 
                 title: Some("New WS Thread".into()),
                 title_override: None,
                 parallel_attempt_group: None,
+                landed: None,
                 updated_at: Utc::now(),
                 created_at: None,
                 interacted_at: None,
@@ -7846,6 +7908,7 @@ async fn test_activate_archived_thread_reuses_workspace_in_another_window(cx: &m
                 title: Some("Cross Window Thread".into()),
                 title_override: None,
                 parallel_attempt_group: None,
+                landed: None,
                 updated_at: Utc::now(),
                 created_at: None,
                 interacted_at: None,
@@ -7926,6 +7989,7 @@ async fn test_activate_archived_thread_reuses_workspace_in_another_window_with_t
         title: Some("Cross Window Thread".into()),
         title_override: None,
         parallel_attempt_group: None,
+        landed: None,
         updated_at: Utc::now(),
         created_at: None,
         interacted_at: None,
@@ -8010,6 +8074,7 @@ async fn test_activate_archived_thread_prefers_current_window_for_matching_paths
         title: Some("Current Window Thread".into()),
         title_override: None,
         parallel_attempt_group: None,
+        landed: None,
         updated_at: Utc::now(),
         created_at: None,
         interacted_at: None,
@@ -8956,6 +9021,7 @@ async fn test_archive_last_worktree_thread_not_blocked_by_remote_thread_at_same_
             title: Some("Remote Worktree Thread".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
             created_at: None,
             interacted_at: None,
@@ -9182,6 +9248,26 @@ fn visible_thread_titles_and_attempts(
     })
 }
 
+fn visible_thread_titles_and_metadata_labels(
+    sidebar: &Entity<Sidebar>,
+    cx: &mut gpui::VisualTestContext,
+) -> Vec<(String, String)> {
+    sidebar.read_with(cx, |sidebar, _cx| {
+        sidebar
+            .contents
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ListEntry::Thread(thread) => Some((
+                    thread.metadata.display_title().to_string(),
+                    Sidebar::thread_metadata_timestamp(thread).to_string(),
+                )),
+                ListEntry::ProjectHeader { .. } | ListEntry::Terminal(_) => None,
+            })
+            .collect()
+    })
+}
+
 #[gpui::test]
 async fn test_parallel_attempt_group_threads_are_contiguous_and_created_ordered(
     cx: &mut TestAppContext,
@@ -9256,6 +9342,64 @@ async fn test_parallel_attempt_group_threads_are_contiguous_and_created_ordered(
             "  Attempt two [2/3]",
             "  Attempt three [3/3]",
             "  Middle ungrouped",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_thread_landing_indicator_is_rendered_in_metadata_slot(cx: &mut TestAppContext) {
+    let project = init_test_project("/my-project", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+    let project_paths = PathList::new(&[PathBuf::from("/my-project")]);
+    seed_project_group(&multi_workspace, &project_paths, cx);
+
+    let timestamp = |day| chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, day, 0, 0, 0).unwrap();
+    let attempt_one_updated_at = timestamp(1);
+    let attempt_two_updated_at = timestamp(2);
+
+    save_thread_metadata_with_paths_parallel_attempt_group_and_landing_state(
+        acp::SessionId::new(Arc::from("attempt-one")),
+        "Attempt one".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        attempt_one_updated_at,
+        Some(attempt_one_updated_at),
+        Some("landed-run"),
+        Some(ThreadLandingState::Merged),
+        cx,
+    );
+    save_thread_metadata_with_paths_parallel_attempt_group_and_landing_state(
+        acp::SessionId::new(Arc::from("attempt-two")),
+        "Attempt two".into(),
+        project_paths.clone(),
+        project_paths.clone(),
+        attempt_two_updated_at,
+        Some(attempt_two_updated_at),
+        Some("landed-run"),
+        Some(ThreadLandingState::PullRequested),
+        cx,
+    );
+    refresh_sidebar_entries(&multi_workspace, cx);
+
+    assert_eq!(
+        visible_thread_titles_and_metadata_labels(&sidebar, cx),
+        vec![
+            (
+                "Attempt one".to_string(),
+                format!(
+                    "1/2 · Merged · {}",
+                    format_history_entry_timestamp(attempt_one_updated_at)
+                )
+            ),
+            (
+                "Attempt two".to_string(),
+                format!(
+                    "2/2 · PR · {}",
+                    format_history_entry_timestamp(attempt_two_updated_at)
+                )
+            ),
         ]
     );
 }
@@ -10026,6 +10170,7 @@ async fn test_unarchive_first_thread_in_group_does_not_create_spurious_draft(
                     title: Some("Unarchived Thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: None,
                     interacted_at: None,
@@ -10121,6 +10266,7 @@ async fn test_unarchive_into_new_workspace_does_not_create_duplicate_real_thread
                     title: Some("Unarchived Thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: None,
                     interacted_at: None,
@@ -10349,6 +10495,7 @@ async fn test_unarchive_into_inactive_existing_workspace_does_not_leave_active_d
                     title: Some("Restored In Inactive Workspace".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: None,
                     interacted_at: None,
@@ -11201,6 +11348,7 @@ async fn test_unarchive_linked_worktree_thread_into_project_group_shows_only_res
                     title: Some("Unarchived Linked Thread".into()),
                     title_override: None,
                     parallel_attempt_group: None,
+                    landed: None,
                     updated_at: Utc::now(),
                     created_at: None,
                     interacted_at: None,
@@ -11753,6 +11901,7 @@ async fn test_legacy_thread_with_canonical_path_opens_main_repo_workspace(cx: &m
             title: Some("Legacy Main Thread".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
             created_at: None,
             interacted_at: None,
@@ -12744,6 +12893,7 @@ mod property_test {
             title: Some(title),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at,
             created_at: None,
             interacted_at: None,
@@ -12817,6 +12967,7 @@ mod property_test {
                         title: Some(title),
                         title_override: None,
                         parallel_attempt_group: None,
+                        landed: None,
                         updated_at,
                         created_at: None,
                         interacted_at: None,
@@ -13682,6 +13833,7 @@ async fn test_remote_project_integration_does_not_briefly_render_as_separate_pro
             title: Some("Worktree Thread".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 1).unwrap(),
             created_at: None,
             interacted_at: None,
@@ -14647,6 +14799,7 @@ async fn test_remote_archive_thread_with_active_connection(
             title: Some("Worktree Thread".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 1, 1, 0, 0, 0)
                 .unwrap(),
             created_at: None,
@@ -14790,6 +14943,7 @@ async fn test_remote_linked_worktree_workspace_to_remove_uses_remote_connection(
             title: Some("Remote Worktree Thread".into()),
             title_override: None,
             parallel_attempt_group: None,
+            landed: None,
             updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
             created_at: None,
             interacted_at: None,

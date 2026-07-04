@@ -877,6 +877,7 @@ fn collect_importable_threads(
                 title: session.title,
                 title_override: None,
                 parallel_attempt_group: None,
+                landed: None,
                 updated_at: session.updated_at.unwrap_or_else(|| Utc::now()),
                 created_at: session.created_at,
                 interacted_at: None,

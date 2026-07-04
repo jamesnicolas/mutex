@@ -7977,6 +7977,7 @@ mod tests {
                         title: Some("Persistent chat".into()),
                         title_override: None,
                         parallel_attempt_group: None,
+                        landed: None,
                         updated_at: Utc::now(),
                         created_at: Some(Utc::now()),
                         interacted_at: None,
