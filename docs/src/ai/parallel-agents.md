@@ -1,6 +1,6 @@
 ---
 title: Parallel Agents - Mutex
-description: Run multiple agent threads and Terminal Threads concurrently using the Threads Sidebar, manage them across projects, and isolate work using Git worktrees.
+description: Run multiple agent threads and Terminal Threads concurrently, isolate tasks in Git worktrees, compare parallel attempts, and land thread changes.
 ---
 
 # Parallel Agents
@@ -75,7 +75,12 @@ A single project can contain multiple folders (a multi-root folder project). Age
 
 ## Worktree Isolation {#worktree-isolation}
 
-If two threads might edit the same files, start one in a new [Git worktree](../git.md#git-worktrees) to give it an isolated checkout.
+If two threads might edit the same files, run the task in a linked
+[Git worktree](../git.md#git-worktrees). A linked worktree gives the thread its
+own checkout while keeping the thread grouped under the same project in the
+Threads Sidebar.
+
+### Manual Worktrees {#manual-worktrees}
 
 Worktrees are managed from the title bar. Click the worktree picker (to the right of the project picker) to switch between existing worktrees or create a new one. New worktrees are created in a detached HEAD state, so you won't accidentally share a branch between worktrees.
 
@@ -83,11 +88,97 @@ Once you're in a new worktree, use the branch picker next to the worktree picker
 
 To automate setup steps whenever a new worktree is created use a [Task hook](../tasks.md#hooks). The `create_worktree` hook runs automatically after Mutex creates a linked worktree, with `ZED_WORKTREE_ROOT` pointing at the new worktree and `ZED_MAIN_GIT_WORKTREE` pointing at the original repository.
 
-After the agent finishes, review the diff and merge the changes through your normal Git workflow. If the thread was running in a linked worktree and no other active threads use it, moving the thread to Thread History saves the worktree's Git state and removes it from disk. Restoring the thread from history restores the worktree.
+### Isolated New Threads {#isolated-new-threads}
+
+Set `agent.isolate_new_threads` to `true` to make the first prompt of a new
+thread in a non-worktree workspace start in a fresh worktree instead of running
+in place. The setting is off by default. See
+[Isolated New Threads](./agent-settings.md#isolated-new-threads) for the
+settings JSON.
+
+This applies to the first prompt in an idle thread when the project has a Git
+repository, is not already a linked worktree, and the current agent supports
+fresh-worktree sibling threads. If Mutex cannot create the fresh-worktree
+thread, the prompt stays in the editor and Mutex shows an error toast.
+
+### Parallel Attempts {#parallel-attempts}
+
+For a new task, open the send-button menu and choose **Send 2 Parallel
+Attempts**, **Send 3 Parallel Attempts**, or **Send 4 Parallel Attempts**. Mutex
+creates that many fresh-worktree sibling threads and submits the same first
+prompt to each one.
+
+Parallel attempts are available before the thread has submitted a prompt, when
+the project has a Git repository, the current thread is idle, and the current
+agent supports fresh-worktree sibling threads. Each attempt gets its own
+worktree and a title based on the prompt, with an `attempt i/N` suffix.
+
+### Comparing Attempts {#comparing-attempts}
+
+Attempts from the same run stay grouped in the Threads Sidebar. The group moves
+as a block based on its most recently updated attempt, and attempts inside the
+group are ordered by creation time.
+
+Each visible attempt in a group shows an `i/N` indicator in the metadata slot,
+such as `1/3`. If only one attempt in a group is visible, Mutex hides the
+indicator. When an attempt lands, the same metadata slot shows **Merged** or
+**PR** before the timestamp, such as `1/3 · Merged · 5m`.
+
+Use each row's status, diff stats, and thread content to compare attempts. You
+can open any attempt like a normal thread.
+
+### Reviewing and Landing {#reviewing-and-landing}
+
+Threads running in linked worktrees can be reviewed and landed from the thread
+controls:
+
+- **Review Changes** opens a branch diff against the merge target. This shows
+  everything the thread would land, including commits made before the latest
+  agent turn.
+- **Merge into &lt;branch&gt;** merges the linked worktree back into the branch
+  checked out in the main worktree. If Mutex cannot show a concrete branch name,
+  the action is labeled **Merge into base branch**. For multiple repositories
+  with different targets, the action is labeled **Merge into base branches**.
+- **Create PR** checkpoints the thread worktree, pushes the thread branch with
+  upstream tracking, and opens the host's create-PR page. The thread worktree
+  must be on a branch, and the repository needs an `origin` or `upstream`
+  remote.
+
+You can also right-click an idle, open linked-worktree thread in the Threads
+Sidebar and use **Review Changes**, **Merge into &lt;branch&gt;**, or **Create
+PR** from the thread context menu. These actions are hidden for drafts, running
+threads, closed workspaces, and threads that already have a landing operation in
+progress.
+
+Before a merge or PR push, Mutex checkpoints uncommitted thread changes
+automatically. A merge fast-forwards when possible and creates a merge commit
+otherwise. If the merge conflicts, Mutex aborts the merge cleanly and reports
+the failure.
+
+After a successful merge from the thread view, Mutex shows a toast with an
+archive action. For a single thread, the action archives that thread. For a
+grouped attempt with other unarchived siblings, the action is **Archive All
+Attempts**. Running attempts still follow the normal archive protection and
+cannot be archived until they finish.
+
+Merges started from the sidebar context menu record the same **Merged** state
+and show a status toast. Use the normal archive controls afterward.
+
+### Retrying in a New Worktree {#retrying-in-a-new-worktree}
+
+After a thread has submitted its first prompt, use **Retry in New Worktree** to
+rerun that first prompt as a fresh-worktree sibling thread. You can use this
+while the source thread is still generating.
+
+If the source thread already belongs to a parallel-attempt group, the retry joins
+that group. If the source thread is not grouped, Mutex creates a new group for
+the source thread and the retry so the sidebar indicators and group archive flow
+apply.
 
 ## See Also {#see-also}
 
 - [Agent Panel](./agent-panel.md): Manage individual threads and configure the agent
+- [Agent Settings](./agent-settings.md): Configure `agent.isolate_new_threads`
 - [External Agents](./external-agents.md): Use ACP-integrated External Agents
 - [Terminal Threads](./terminal-threads.md): Run agent CLIs and TUIs directly in Mutex
 - [Tools](./tools.md): Built-in tools available in each thread

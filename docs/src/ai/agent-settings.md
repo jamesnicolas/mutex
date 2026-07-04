@@ -32,7 +32,8 @@ For the model-access paths and provider-specific setup, see [LLM Providers](./ll
 
 ## Feature-Specific Settings {#feature-specific-settings}
 
-Some Mutex AI features have their own model or prompt settings in `settings.json`, including:
+Some Mutex AI features have their own model, prompt, or thread behavior settings
+in `settings.json`, including:
 
 - `agent.inline_assistant_model`
 - `agent.commit_message_model`
@@ -40,6 +41,7 @@ Some Mutex AI features have their own model or prompt settings in `settings.json
 - `agent.subagent_model`
 - `agent.commit_message_instructions`
 - `agent.inline_alternatives`
+- `agent.isolate_new_threads`
 
 Use `agent.commit_message_instructions` for instructions that apply only to generated Git commit messages:
 
@@ -52,6 +54,25 @@ Use `agent.commit_message_instructions` for instructions that apply only to gene
 ```
 
 For feature-specific model examples, see [Feature-specific Models](#feature-specific-models).
+
+## Isolated New Threads {#isolated-new-threads}
+
+Set `agent.isolate_new_threads` to `true` to send the first prompt of a new
+thread in a non-worktree workspace as a fresh-worktree thread instead of running
+in place when the current agent supports fresh-worktree sibling threads. This
+boolean setting is off by default.
+
+```json [settings]
+{
+  "agent": {
+    "isolate_new_threads": true
+  }
+}
+```
+
+You can also configure this in the Settings Editor as **Isolate New Threads**.
+For the full task workflow, see
+[Worktree Isolation](./parallel-agents.md#worktree-isolation).
 
 ## Automatic Compaction {#automatic-compaction}
 
