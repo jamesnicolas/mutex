@@ -589,6 +589,7 @@ mod tests {
             notify_when_agent_waiting: NotifyWhenAgentWaiting::default(),
             play_sound_when_agent_done: PlaySoundWhenAgentDone::default(),
             single_file_review: false,
+            isolate_new_threads: false,
             model_parameters: vec![],
             auto_compact: agent_settings::AutoCompactSettings {
                 enabled: false,

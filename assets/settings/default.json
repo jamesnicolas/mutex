@@ -1125,6 +1125,11 @@
     },
     // When enabled, agent edits will be displayed in single-file editors for review
     "single_file_review": false,
+    // When enabled, the first prompt of a thread in a non-worktree workspace
+    // is sent as a single fresh-worktree thread instead of running in place.
+    //
+    // Default: false
+    "isolate_new_threads": false,
     // Settings for automatic agent context compaction, which summarizes earlier
     // messages to free up room in the model's context window once it grows too
     // large.

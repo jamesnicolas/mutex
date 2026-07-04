@@ -7971,6 +7971,25 @@ fn ai_page(cx: &App) -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
+                title: "Isolate New Threads",
+                description: "When enabled, the first prompt of a thread in a non-worktree workspace starts in a fresh worktree.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("agent.isolate_new_threads"),
+                    pick: |settings_content| {
+                        settings_content.agent.as_ref()?.isolate_new_threads.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .isolate_new_threads = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
                 title: "Enable Feedback",
                 description: "Show voting thumbs up/down icon buttons for feedback on agent edits.",
                 field: Box::new(SettingField {

@@ -1437,6 +1437,17 @@ impl ThreadView {
             .is_some_and(|project| !project.read(cx).repositories(cx).is_empty())
     }
 
+    fn is_linked_worktree_project(&self, cx: &App) -> bool {
+        !self.thread_worktree_merge_targets(cx).is_empty()
+    }
+
+    fn sibling_thread_host(&self, cx: &App) -> Option<Rc<dyn agent::SiblingThreadHost>> {
+        self.as_native_connection(cx)?
+            .0
+            .read(cx)
+            .sibling_thread_host()
+    }
+
     fn can_send_parallel_attempts(&self, cx: &App) -> bool {
         self.parallel_attempts_task.is_none()
             && !self.is_loading_contents
@@ -1445,6 +1456,87 @@ impl ThreadView {
             && !self.message_editor.read(cx).is_empty(cx)
             && self.project_has_git_repository(cx)
             && self.as_native_connection(cx).is_some()
+    }
+
+    fn send_isolated_new_thread_if_eligible(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !AgentSettings::get_global(cx).isolate_new_threads {
+            return false;
+        }
+
+        if self.parallel_attempts_task.is_some() {
+            return true;
+        }
+
+        let prompt = self.message_editor.read(cx).text(cx);
+        let prompt = prompt.trim();
+        let host = self.sibling_thread_host(cx);
+        let eligibility = IsolatedNewThreadEligibility {
+            setting_enabled: true,
+            sibling_thread_creation_in_flight: false,
+            is_loading_contents: self.is_loading_contents,
+            is_thread_idle: self.thread.read(cx).status() == ThreadStatus::Idle,
+            has_submitted_prompt: self.has_user_submitted_prompt(cx),
+            has_prompt_text: !prompt.is_empty(),
+            project_has_git_repository: self.project_has_git_repository(cx),
+            is_linked_worktree_project: self.is_linked_worktree_project(cx),
+            has_native_sibling_host: host.is_some(),
+        };
+
+        if !should_isolate_new_thread(eligibility) {
+            return false;
+        }
+
+        let Some(host) = host else {
+            return false;
+        };
+
+        let run_identifier = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>();
+        let request = isolated_thread_request(prompt, self.current_model_id(cx), &run_identifier);
+        let message_editor = self.message_editor.clone();
+        let window_handle = window.window_handle();
+
+        self.parallel_attempts_task = Some(cx.spawn(async move |this, cx| {
+            let result = host.create_sibling_thread(request, cx).await;
+            let updated = window_handle.update(cx, |_root, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.parallel_attempts_task = None;
+                    match result {
+                        Ok(_) => {
+                            message_editor.update(cx, |message_editor, cx| {
+                                message_editor.clear(window, cx);
+                            });
+                            this.clear_external_source_prompt_warning(cx);
+                            this.show_parallel_attempts_toast(
+                                "Started thread in a fresh worktree".to_string(),
+                                cx,
+                            );
+                        }
+                        Err(error) => {
+                            this.show_parallel_attempts_toast(
+                                format!("Failed to start thread in a fresh worktree: {error:#}"),
+                                cx,
+                            );
+                        }
+                    }
+                    cx.notify();
+                })
+            });
+
+            if let Err(error) = updated.and_then(|inner| inner) {
+                log::error!("failed to update thread view after isolated thread start: {error:#}");
+            }
+        }));
+        cx.notify();
+        true
     }
 
     fn send_parallel_attempts(
@@ -1551,12 +1643,15 @@ impl ThreadView {
     }
 
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let thread = &self.thread;
-
         if self.is_loading_contents {
             return;
         }
 
+        if self.send_isolated_new_thread_if_eligible(window, cx) {
+            return;
+        }
+
+        let thread = &self.thread;
         let message_editor = self.message_editor.clone();
 
         let is_editor_empty = message_editor.read(cx).is_empty(cx);
@@ -12125,9 +12220,34 @@ fn strip_leading_command(text: &str, command_name: &str) -> String {
         .unwrap_or_else(|| trimmed.to_string())
 }
 
-const PARALLEL_ATTEMPT_TITLE_WORD_LIMIT: usize = 10;
-const PARALLEL_ATTEMPT_TITLE_CHAR_LIMIT: usize = 80;
-const PARALLEL_ATTEMPT_WORKTREE_PREFIX_LIMIT: usize = 40;
+const SIBLING_THREAD_TITLE_WORD_LIMIT: usize = 10;
+const SIBLING_THREAD_TITLE_CHAR_LIMIT: usize = 80;
+const SIBLING_THREAD_WORKTREE_PREFIX_LIMIT: usize = 40;
+
+#[derive(Clone, Copy, Debug)]
+struct IsolatedNewThreadEligibility {
+    setting_enabled: bool,
+    sibling_thread_creation_in_flight: bool,
+    is_loading_contents: bool,
+    is_thread_idle: bool,
+    has_submitted_prompt: bool,
+    has_prompt_text: bool,
+    project_has_git_repository: bool,
+    is_linked_worktree_project: bool,
+    has_native_sibling_host: bool,
+}
+
+fn should_isolate_new_thread(eligibility: IsolatedNewThreadEligibility) -> bool {
+    eligibility.setting_enabled
+        && !eligibility.sibling_thread_creation_in_flight
+        && !eligibility.is_loading_contents
+        && eligibility.is_thread_idle
+        && !eligibility.has_submitted_prompt
+        && eligibility.has_prompt_text
+        && eligibility.project_has_git_repository
+        && !eligibility.is_linked_worktree_project
+        && eligibility.has_native_sibling_host
+}
 
 fn parallel_attempt_requests(
     prompt: &str,
@@ -12155,26 +12275,42 @@ fn parallel_attempt_requests(
         .collect()
 }
 
-fn parallel_attempt_title(prompt: &str, attempt: usize, count: usize) -> String {
+fn isolated_thread_request(
+    prompt: &str,
+    model: Option<String>,
+    run_identifier: &str,
+) -> agent::SiblingThreadRequest {
+    agent::SiblingThreadRequest {
+        title: prompt_title_prefix(prompt).into(),
+        prompt: prompt.to_string(),
+        agent_id: None,
+        model,
+        parallel_attempt_group: None,
+        use_new_worktree: true,
+        worktree_name: Some(isolated_thread_worktree_name(prompt, run_identifier)),
+        base_ref: None,
+    }
+}
+
+fn prompt_title_prefix(prompt: &str) -> String {
     let prefix = prompt
         .split_whitespace()
-        .take(PARALLEL_ATTEMPT_TITLE_WORD_LIMIT)
+        .take(SIBLING_THREAD_TITLE_WORD_LIMIT)
         .collect::<Vec<_>>()
         .join(" ");
-    let prefix = if prefix.is_empty() {
+    if prefix.is_empty() {
         DEFAULT_THREAD_TITLE.to_string()
     } else {
-        util::truncate_and_trailoff(&prefix, PARALLEL_ATTEMPT_TITLE_CHAR_LIMIT)
-    };
+        util::truncate_and_trailoff(&prefix, SIBLING_THREAD_TITLE_CHAR_LIMIT)
+    }
+}
+
+fn parallel_attempt_title(prompt: &str, attempt: usize, count: usize) -> String {
+    let prefix = prompt_title_prefix(prompt);
     format!("{prefix} - attempt {attempt}/{count}")
 }
 
-fn parallel_attempt_worktree_name(
-    prompt: &str,
-    attempt: usize,
-    count: usize,
-    run_identifier: &str,
-) -> String {
+fn prompt_worktree_name_prefix(prompt: &str, fallback: &str) -> String {
     let mut base_name = String::new();
     let mut pending_separator = false;
 
@@ -12189,15 +12325,30 @@ fn parallel_attempt_worktree_name(
             pending_separator = true;
         }
 
-        if base_name.len() >= PARALLEL_ATTEMPT_WORKTREE_PREFIX_LIMIT {
+        if base_name.len() >= SIBLING_THREAD_WORKTREE_PREFIX_LIMIT {
             break;
         }
     }
 
     if base_name.is_empty() {
-        base_name = "parallel-attempt".to_string();
+        base_name = fallback.to_string();
     }
 
+    base_name
+}
+
+fn isolated_thread_worktree_name(prompt: &str, run_identifier: &str) -> String {
+    let base_name = prompt_worktree_name_prefix(prompt, "isolated-thread");
+    format!("{base_name}-{run_identifier}")
+}
+
+fn parallel_attempt_worktree_name(
+    prompt: &str,
+    attempt: usize,
+    count: usize,
+    run_identifier: &str,
+) -> String {
+    let base_name = prompt_worktree_name_prefix(prompt, "parallel-attempt");
     format!("{base_name}-{run_identifier}-attempt-{attempt}-of-{count}")
 }
 
@@ -12219,6 +12370,20 @@ mod tests {
         acp::AvailableCommand::new(name, "").meta(acp_thread::meta_with_command_category(
             acp_thread::CommandCategory::Mcp,
         ))
+    }
+
+    fn eligible_isolated_new_thread() -> IsolatedNewThreadEligibility {
+        IsolatedNewThreadEligibility {
+            setting_enabled: true,
+            sibling_thread_creation_in_flight: false,
+            is_loading_contents: false,
+            is_thread_idle: true,
+            has_submitted_prompt: false,
+            has_prompt_text: true,
+            project_has_git_repository: true,
+            is_linked_worktree_project: false,
+            has_native_sibling_host: true,
+        }
     }
 
     #[test]
@@ -12306,6 +12471,33 @@ mod tests {
     }
 
     #[test]
+    fn test_isolated_thread_request_uses_plain_title_and_unique_worktree_name() {
+        let request = isolated_thread_request(
+            "Fix the project panel crash",
+            Some("provider/model".to_string()),
+            "run123",
+        );
+        let second_request = isolated_thread_request(
+            "Fix the project panel crash",
+            Some("provider/model".to_string()),
+            "run124",
+        );
+
+        assert_eq!(request.title.as_ref(), "Fix the project panel crash");
+        assert_eq!(request.prompt, "Fix the project panel crash");
+        assert_eq!(request.agent_id, None);
+        assert_eq!(request.model, Some("provider/model".to_string()));
+        assert_eq!(request.parallel_attempt_group, None);
+        assert!(request.use_new_worktree);
+        assert_eq!(
+            request.worktree_name,
+            Some("fix-the-project-panel-crash-run123".to_string())
+        );
+        assert_ne!(request.worktree_name, second_request.worktree_name);
+        assert_eq!(request.base_ref, None);
+    }
+
+    #[test]
     fn test_parallel_attempt_requests_clamp_count_and_reuse_prompt() {
         let requests = parallel_attempt_requests(
             "Fix the project panel crash",
@@ -12381,6 +12573,15 @@ mod tests {
                 "run123".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn test_should_not_isolate_new_thread_inside_linked_worktree_project() {
+        let mut eligibility = eligible_isolated_new_thread();
+        assert!(should_isolate_new_thread(eligibility));
+
+        eligibility.is_linked_worktree_project = true;
+        assert!(!should_isolate_new_thread(eligibility));
     }
 
     #[gpui::test]
