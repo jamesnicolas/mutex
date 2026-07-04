@@ -962,7 +962,7 @@ pub struct CreateThreadOptions {
     /// Model override, as `provider/model-id`. Only applied when the thread
     /// uses the native Mutex agent.
     pub model: Option<String>,
-    /// Persistent id linking threads created as parallel attempts.
+    /// Persistent id linking sibling retry attempts.
     pub parallel_attempt_group: Option<String>,
     /// Working directories to attach to the new thread (e.g., the path of a
     /// freshly-created sibling worktree). When `None`, the thread inherits

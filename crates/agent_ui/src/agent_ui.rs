@@ -327,15 +327,6 @@ pub struct ArchiveThread {
     pub session_id: String,
 }
 
-/// Sends the first prompt as multiple parallel attempts.
-#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
-#[action(namespace = agent)]
-#[serde(deny_unknown_fields)]
-pub struct SendParallelAttempts {
-    /// The number of attempts to start.
-    pub count: usize,
-}
-
 /// Action to authorize a tool call with a specific permission option.
 /// This is used by the permission granularity dropdown to authorize tool calls.
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]

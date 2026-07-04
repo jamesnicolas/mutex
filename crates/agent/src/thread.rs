@@ -763,7 +763,7 @@ pub struct SiblingThreadRequest {
     /// Optional model override, as `provider/model-id`.
     /// Defaults to the user's configured default model for the agent.
     pub model: Option<String>,
-    /// Optional group id linking sibling threads created as parallel attempts.
+    /// Optional group id linking sibling retry attempts.
     pub parallel_attempt_group: Option<String>,
     /// Whether to create the thread in a new git worktree workspace.
     pub use_new_worktree: bool,

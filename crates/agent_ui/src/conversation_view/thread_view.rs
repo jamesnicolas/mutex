@@ -617,8 +617,7 @@ pub struct ThreadView {
     pub _subscriptions: Vec<Subscription>,
     pub message_editor: Entity<MessageEditor>,
     pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
-    pub parallel_attempts_menu_handle: PopoverMenuHandle<ContextMenu>,
-    pub parallel_attempts_task: Option<Task<()>>,
+    pub sibling_thread_task: Option<Task<()>>,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub fast_mode_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
@@ -1014,8 +1013,7 @@ impl ThreadView {
             in_flight_prompt: None,
             message_editor,
             add_context_menu_handle: PopoverMenuHandle::default(),
-            parallel_attempts_menu_handle: PopoverMenuHandle::default(),
-            parallel_attempts_task: None,
+            sibling_thread_task: None,
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
             fast_mode_menu_handle: PopoverMenuHandle::default(),
             project,
@@ -1448,16 +1446,6 @@ impl ThreadView {
             .sibling_thread_host()
     }
 
-    fn can_send_parallel_attempts(&self, cx: &App) -> bool {
-        self.parallel_attempts_task.is_none()
-            && !self.is_loading_contents
-            && self.thread.read(cx).status() == ThreadStatus::Idle
-            && !self.has_user_submitted_prompt(cx)
-            && !self.message_editor.read(cx).is_empty(cx)
-            && self.project_has_git_repository(cx)
-            && self.as_native_connection(cx).is_some()
-    }
-
     fn should_show_retry_in_new_worktree(&self, cx: &App) -> bool {
         self.has_user_submitted_prompt(cx)
             && self.project_has_git_repository(cx)
@@ -1465,7 +1453,7 @@ impl ThreadView {
     }
 
     fn can_retry_in_new_worktree(&self, cx: &App) -> bool {
-        self.parallel_attempts_task.is_none() && self.should_show_retry_in_new_worktree(cx)
+        self.sibling_thread_task.is_none() && self.should_show_retry_in_new_worktree(cx)
     }
 
     fn first_user_message_plain_text(&self, cx: &App) -> Option<String> {
@@ -1488,20 +1476,17 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.parallel_attempts_task.is_some() {
+        if self.sibling_thread_task.is_some() {
             return;
         }
 
         if !self.has_user_submitted_prompt(cx) {
-            self.show_parallel_attempts_toast(
-                "Retry needs a submitted first prompt".to_string(),
-                cx,
-            );
+            self.show_sibling_thread_toast("Retry needs a submitted first prompt".to_string(), cx);
             return;
         }
 
         if !self.project_has_git_repository(cx) {
-            self.show_parallel_attempts_toast(
+            self.show_sibling_thread_toast(
                 "Retry in a fresh worktree needs a git repository in the project".to_string(),
                 cx,
             );
@@ -1509,14 +1494,14 @@ impl ThreadView {
         }
 
         let Some(connection) = self.as_native_connection(cx) else {
-            self.show_parallel_attempts_toast(
+            self.show_sibling_thread_toast(
                 "Retry in a fresh worktree is only available for native agent threads".to_string(),
                 cx,
             );
             return;
         };
         let Some(host) = connection.0.read(cx).sibling_thread_host() else {
-            self.show_parallel_attempts_toast(
+            self.show_sibling_thread_toast(
                 "Retry in a fresh worktree is not available in this workspace".to_string(),
                 cx,
             );
@@ -1524,7 +1509,7 @@ impl ThreadView {
         };
 
         let Some(prompt) = self.first_user_message_plain_text(cx) else {
-            self.show_parallel_attempts_toast(
+            self.show_sibling_thread_toast(
                 "Could not find a non-empty first prompt for this thread".to_string(),
                 cx,
             );
@@ -1532,7 +1517,7 @@ impl ThreadView {
         };
 
         let Some(metadata_store) = ThreadMetadataStore::try_global(cx) else {
-            self.show_parallel_attempts_toast(
+            self.show_sibling_thread_toast(
                 "Could not access thread metadata for retry".to_string(),
                 cx,
             );
@@ -1566,20 +1551,20 @@ impl ThreadView {
         );
         let window_handle = window.window_handle();
 
-        self.parallel_attempts_task = Some(cx.spawn(async move |this, cx| {
+        self.sibling_thread_task = Some(cx.spawn(async move |this, cx| {
             let result = host.create_sibling_thread(request, cx).await;
             let updated = window_handle.update(cx, |_root, _window, cx| {
                 this.update(cx, |this, cx| {
-                    this.parallel_attempts_task = None;
+                    this.sibling_thread_task = None;
                     match result {
                         Ok(_) => {
-                            this.show_parallel_attempts_toast(
+                            this.show_sibling_thread_toast(
                                 "Started retry in a fresh worktree".to_string(),
                                 cx,
                             );
                         }
                         Err(error) => {
-                            this.show_parallel_attempts_toast(
+                            this.show_sibling_thread_toast(
                                 format!("Failed to start retry in a fresh worktree: {error:#}"),
                                 cx,
                             );
@@ -1605,7 +1590,7 @@ impl ThreadView {
             return false;
         }
 
-        if self.parallel_attempts_task.is_some() {
+        if self.sibling_thread_task.is_some() {
             return true;
         }
 
@@ -1637,24 +1622,24 @@ impl ThreadView {
         let message_editor = self.message_editor.clone();
         let window_handle = window.window_handle();
 
-        self.parallel_attempts_task = Some(cx.spawn(async move |this, cx| {
+        self.sibling_thread_task = Some(cx.spawn(async move |this, cx| {
             let result = host.create_sibling_thread(request, cx).await;
             let updated = window_handle.update(cx, |_root, window, cx| {
                 this.update(cx, |this, cx| {
-                    this.parallel_attempts_task = None;
+                    this.sibling_thread_task = None;
                     match result {
                         Ok(_) => {
                             message_editor.update(cx, |message_editor, cx| {
                                 message_editor.clear(window, cx);
                             });
                             this.clear_external_source_prompt_warning(cx);
-                            this.show_parallel_attempts_toast(
+                            this.show_sibling_thread_toast(
                                 "Started thread in a fresh worktree".to_string(),
                                 cx,
                             );
                         }
                         Err(error) => {
-                            this.show_parallel_attempts_toast(
+                            this.show_sibling_thread_toast(
                                 format!("Failed to start thread in a fresh worktree: {error:#}"),
                                 cx,
                             );
@@ -1670,104 +1655,6 @@ impl ThreadView {
         }));
         cx.notify();
         true
-    }
-
-    fn send_parallel_attempts(
-        &mut self,
-        action: &SendParallelAttempts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.can_send_parallel_attempts(cx) {
-            if !self.project_has_git_repository(cx) {
-                self.show_parallel_attempts_toast(
-                    "Parallel attempts need a git repository in the project".to_string(),
-                    cx,
-                );
-            }
-            return;
-        }
-
-        let count = action.count.clamp(2, 4);
-        let prompt = self.message_editor.read(cx).text(cx);
-        let prompt = prompt.trim();
-        if prompt.is_empty() {
-            return;
-        }
-
-        let Some(connection) = self.as_native_connection(cx) else {
-            self.show_parallel_attempts_toast(
-                "Parallel attempts are only available for native agent threads".to_string(),
-                cx,
-            );
-            return;
-        };
-        let Some(host) = connection.0.read(cx).sibling_thread_host() else {
-            self.show_parallel_attempts_toast(
-                "Parallel attempts are not available in this workspace".to_string(),
-                cx,
-            );
-            return;
-        };
-
-        let run_identifier = new_sibling_thread_run_identifier();
-        let requests =
-            parallel_attempt_requests(prompt, count, self.current_model_id(cx), &run_identifier);
-        let message_editor = self.message_editor.clone();
-        let window_handle = window.window_handle();
-
-        self.parallel_attempts_task = Some(cx.spawn(async move |this, cx| {
-            let total_count = requests.len();
-            let mut started_count = 0;
-            let mut error = None;
-
-            for request in requests {
-                match host.create_sibling_thread(request, cx).await {
-                    Ok(_) => started_count += 1,
-                    Err(err) => {
-                        error = Some(format!("{err:#}"));
-                        break;
-                    }
-                }
-            }
-
-            let updated = window_handle.update(cx, |_root, window, cx| {
-                this.update(cx, |this, cx| {
-                    this.parallel_attempts_task = None;
-                    if error.is_none() && started_count == total_count {
-                        message_editor.update(cx, |message_editor, cx| {
-                            message_editor.clear(window, cx);
-                        });
-                        this.clear_external_source_prompt_warning(cx);
-                        this.show_parallel_attempts_toast(
-                            format!("Started {started_count} parallel attempts"),
-                            cx,
-                        );
-                    } else {
-                        let message = match error {
-                            Some(error) if started_count == 0 => {
-                                format!("Failed to start parallel attempts: {error}")
-                            }
-                            Some(error) => {
-                                format!(
-                                    "Started {started_count}/{total_count} parallel attempts; failed: {error}"
-                                )
-                            }
-                            None => format!(
-                                "Started {started_count}/{total_count} parallel attempts"
-                            ),
-                        };
-                        this.show_parallel_attempts_toast(message, cx);
-                    }
-                    cx.notify();
-                })
-            });
-
-            if let Err(error) = updated.and_then(|inner| inner) {
-                log::error!("failed to update thread view after parallel attempts: {error:#}");
-            }
-        }));
-        cx.notify();
     }
 
     pub fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3311,13 +3198,12 @@ impl ThreadView {
         }
     }
 
-    fn show_parallel_attempts_toast(&self, message: String, cx: &mut Context<Self>) {
+    fn show_sibling_thread_toast(&self, message: String, cx: &mut Context<Self>) {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.update(cx, |workspace, cx| {
-                struct ParallelAttemptsToast;
+                struct SiblingThreadToast;
                 workspace.show_toast(
-                    Toast::new(NotificationId::unique::<ParallelAttemptsToast>(), message)
-                        .autohide(),
+                    Toast::new(NotificationId::unique::<SiblingThreadToast>(), message).autohide(),
                     cx,
                 );
             });
@@ -5720,48 +5606,6 @@ impl ThreadView {
             .anchor(gpui::Anchor::BottomLeft)
     }
 
-    fn render_parallel_attempts_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.message_editor.focus_handle(cx);
-
-        PopoverMenu::new("parallel-attempts-menu")
-            .trigger_with_tooltip(
-                IconButton::new("parallel-attempts", IconName::GitBranch)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted),
-                Tooltip::text("Send Parallel Attempts"),
-            )
-            .anchor(gpui::Anchor::BottomRight)
-            .with_handle(self.parallel_attempts_menu_handle.clone())
-            .offset(gpui::Point {
-                x: px(0.0),
-                y: px(-2.0),
-            })
-            .menu(move |window, cx| {
-                let focus_handle = focus_handle.clone();
-                Some(ContextMenu::build(
-                    window,
-                    cx,
-                    move |mut menu, _window, _cx| {
-                        menu = menu.context(focus_handle);
-
-                        for count in 2..=4 {
-                            menu.push_item(
-                                ContextMenuEntry::new(format!("Send {count} Parallel Attempts"))
-                                    .handler(move |window, cx| {
-                                        window.dispatch_action(
-                                            Box::new(SendParallelAttempts { count }),
-                                            cx,
-                                        );
-                                    }),
-                            );
-                        }
-
-                        menu
-                    },
-                ))
-            })
-    }
-
     fn render_send_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let (is_editor_empty, focus_handle) = {
             let message_editor = self.message_editor.read(cx);
@@ -5841,15 +5685,7 @@ impl ThreadView {
                     this.send(window, cx);
                 }));
 
-            if self.can_send_parallel_attempts(cx) {
-                h_flex()
-                    .gap_0p5()
-                    .child(self.render_parallel_attempts_menu(cx))
-                    .child(send_button)
-                    .into_any_element()
-            } else {
-                send_button.into_any_element()
-            }
+            send_button.into_any_element()
         }
     }
 
@@ -12055,7 +11891,6 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::create_thread_pull_request))
             .on_action(cx.listener(Self::merge_thread_changes))
             .on_action(cx.listener(Self::retry_in_new_worktree))
-            .on_action(cx.listener(Self::send_parallel_attempts))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
             }))
@@ -12458,32 +12293,6 @@ fn retry_parallel_attempt_group(
     }
 }
 
-fn parallel_attempt_requests(
-    prompt: &str,
-    count: usize,
-    model: Option<String>,
-    run_identifier: &str,
-) -> Vec<agent::SiblingThreadRequest> {
-    let count = count.clamp(2, 4);
-    (1..=count)
-        .map(|attempt| agent::SiblingThreadRequest {
-            title: parallel_attempt_title(prompt, attempt, count).into(),
-            prompt: prompt.to_string(),
-            agent_id: None,
-            model: model.clone(),
-            parallel_attempt_group: Some(run_identifier.to_string()),
-            use_new_worktree: true,
-            worktree_name: Some(parallel_attempt_worktree_name(
-                prompt,
-                attempt,
-                count,
-                run_identifier,
-            )),
-            base_ref: None,
-        })
-        .collect()
-}
-
 fn retry_in_new_worktree_request(
     prompt: &str,
     model: Option<String>,
@@ -12532,11 +12341,6 @@ fn prompt_title_prefix(prompt: &str) -> String {
     }
 }
 
-fn parallel_attempt_title(prompt: &str, attempt: usize, count: usize) -> String {
-    let prefix = prompt_title_prefix(prompt);
-    format!("{prefix} - attempt {attempt}/{count}")
-}
-
 fn prompt_worktree_name_prefix(prompt: &str, fallback: &str) -> String {
     let mut base_name = String::new();
     let mut pending_separator = false;
@@ -12567,16 +12371,6 @@ fn prompt_worktree_name_prefix(prompt: &str, fallback: &str) -> String {
 fn isolated_thread_worktree_name(prompt: &str, run_identifier: &str) -> String {
     let base_name = prompt_worktree_name_prefix(prompt, "isolated-thread");
     format!("{base_name}-{run_identifier}")
-}
-
-fn parallel_attempt_worktree_name(
-    prompt: &str,
-    attempt: usize,
-    count: usize,
-    run_identifier: &str,
-) -> String {
-    let base_name = prompt_worktree_name_prefix(prompt, "parallel-attempt");
-    format!("{base_name}-{run_identifier}-attempt-{attempt}-of-{count}")
 }
 
 #[cfg(test)]
@@ -12662,42 +12456,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parallel_attempt_title_uses_prompt_words_and_suffix() {
-        assert_eq!(
-            parallel_attempt_title("Build a calendar view with drag and drop", 2, 3),
-            "Build a calendar view with drag and drop - attempt 2/3"
-        );
-        assert_eq!(
-            parallel_attempt_title("   \n\t", 1, 2),
-            "New Agent Thread - attempt 1/2"
-        );
-    }
-
-    #[test]
-    fn test_parallel_attempt_worktree_name_is_unique_and_sanitized() {
-        let names = (1..=4)
-            .map(|attempt| {
-                parallel_attempt_worktree_name(
-                    "Build a Calendar: drag & drop!",
-                    attempt,
-                    4,
-                    "run123",
-                )
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            names,
-            vec![
-                "build-a-calendar-drag-drop-run123-attempt-1-of-4".to_string(),
-                "build-a-calendar-drag-drop-run123-attempt-2-of-4".to_string(),
-                "build-a-calendar-drag-drop-run123-attempt-3-of-4".to_string(),
-                "build-a-calendar-drag-drop-run123-attempt-4-of-4".to_string(),
-            ]
-        );
-    }
-
-    #[test]
     fn test_isolated_thread_request_uses_plain_title_and_unique_worktree_name() {
         let request = isolated_thread_request(
             "Fix the project panel crash",
@@ -12734,7 +12492,7 @@ mod tests {
             "retry123",
         );
         let previous_run_worktree_name =
-            parallel_attempt_worktree_name("Fix the project panel crash", 1, 2, "previous");
+            "fix-the-project-panel-crash-previous-attempt-1-of-2".to_string();
 
         assert_eq!(request.title.as_ref(), "Fix the project panel crash");
         assert!(!request.title.as_ref().contains("attempt"));
@@ -12770,84 +12528,6 @@ mod tests {
                 group: "new123".to_string(),
                 assign_source: true,
             }
-        );
-    }
-
-    #[test]
-    fn test_parallel_attempt_requests_clamp_count_and_reuse_prompt() {
-        let requests = parallel_attempt_requests(
-            "Fix the project panel crash",
-            8,
-            Some("provider/model".to_string()),
-            "run123",
-        );
-
-        let titles = requests
-            .iter()
-            .map(|request| request.title.to_string())
-            .collect::<Vec<_>>();
-        let worktree_names = requests
-            .iter()
-            .filter_map(|request| request.worktree_name.clone())
-            .collect::<Vec<_>>();
-        let prompts = requests
-            .iter()
-            .map(|request| request.prompt.as_str())
-            .collect::<Vec<_>>();
-        let models = requests
-            .iter()
-            .filter_map(|request| request.model.clone())
-            .collect::<Vec<_>>();
-        let parallel_attempt_groups = requests
-            .iter()
-            .filter_map(|request| request.parallel_attempt_group.clone())
-            .collect::<Vec<_>>();
-
-        assert_eq!(requests.len(), 4);
-        assert_eq!(
-            titles,
-            vec![
-                "Fix the project panel crash - attempt 1/4".to_string(),
-                "Fix the project panel crash - attempt 2/4".to_string(),
-                "Fix the project panel crash - attempt 3/4".to_string(),
-                "Fix the project panel crash - attempt 4/4".to_string(),
-            ]
-        );
-        assert_eq!(
-            worktree_names,
-            vec![
-                "fix-the-project-panel-crash-run123-attempt-1-of-4".to_string(),
-                "fix-the-project-panel-crash-run123-attempt-2-of-4".to_string(),
-                "fix-the-project-panel-crash-run123-attempt-3-of-4".to_string(),
-                "fix-the-project-panel-crash-run123-attempt-4-of-4".to_string(),
-            ]
-        );
-        assert_eq!(
-            prompts,
-            vec![
-                "Fix the project panel crash",
-                "Fix the project panel crash",
-                "Fix the project panel crash",
-                "Fix the project panel crash",
-            ]
-        );
-        assert_eq!(
-            models,
-            vec![
-                "provider/model".to_string(),
-                "provider/model".to_string(),
-                "provider/model".to_string(),
-                "provider/model".to_string(),
-            ]
-        );
-        assert_eq!(
-            parallel_attempt_groups,
-            vec![
-                "run123".to_string(),
-                "run123".to_string(),
-                "run123".to_string(),
-                "run123".to_string(),
-            ]
         );
     }
 

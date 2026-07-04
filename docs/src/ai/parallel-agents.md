@@ -1,6 +1,6 @@
 ---
 title: Parallel Agents - Mutex
-description: Run multiple agent threads and Terminal Threads concurrently, isolate tasks in Git worktrees, compare parallel attempts, and land thread changes.
+description: Run multiple agent threads and Terminal Threads concurrently, isolate tasks in Git worktrees, compare retry attempts, and land thread changes.
 ---
 
 # Parallel Agents
@@ -101,23 +101,12 @@ repository, is not already a linked worktree, and the current agent supports
 fresh-worktree sibling threads. If Mutex cannot create the fresh-worktree
 thread, the prompt stays in the editor and Mutex shows an error toast.
 
-### Parallel Attempts {#parallel-attempts}
-
-For a new task, open the send-button menu and choose **Send 2 Parallel
-Attempts**, **Send 3 Parallel Attempts**, or **Send 4 Parallel Attempts**. Mutex
-creates that many fresh-worktree sibling threads and submits the same first
-prompt to each one.
-
-Parallel attempts are available before the thread has submitted a prompt, when
-the project has a Git repository, the current thread is idle, and the current
-agent supports fresh-worktree sibling threads. Each attempt gets its own
-worktree and a title based on the prompt, with an `attempt i/N` suffix.
-
 ### Comparing Attempts {#comparing-attempts}
 
-Attempts from the same run stay grouped in the Threads Sidebar. The group moves
-as a block based on its most recently updated attempt, and attempts inside the
-group are ordered by creation time.
+When you use **Retry in New Worktree**, Mutex groups the source thread and the
+fresh-worktree retry in the Threads Sidebar. Additional retries from the same
+group join that group. The group moves as a block based on its most recently
+updated attempt, and attempts inside the group are ordered by creation time.
 
 Each visible attempt in a group shows an `i/N` indicator in the metadata slot,
 such as `1/3`. If only one attempt in a group is visible, Mutex hides the
@@ -170,9 +159,9 @@ After a thread has submitted its first prompt, use **Retry in New Worktree** to
 rerun that first prompt as a fresh-worktree sibling thread. You can use this
 while the source thread is still generating.
 
-If the source thread already belongs to a parallel-attempt group, the retry joins
-that group. If the source thread is not grouped, Mutex creates a new group for
-the source thread and the retry so the sidebar indicators and group archive flow
+If the source thread already belongs to an attempt group, the retry joins that
+group. If the source thread is not grouped, Mutex creates a new group for the
+source thread and the retry so the sidebar indicators and group archive flow
 apply.
 
 ## See Also {#see-also}
