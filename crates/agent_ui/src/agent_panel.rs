@@ -1689,6 +1689,20 @@ impl AgentPanel {
         })
     }
 
+    pub(crate) fn sibling_thread_host_for_panel(
+        panel: &Entity<Self>,
+        window: &mut Window,
+        cx: &App,
+    ) -> Option<Rc<dyn agent::SiblingThreadHost>> {
+        if !cx.has_flag::<CreateThreadToolFeatureFlag>() {
+            return None;
+        }
+        Some(Rc::new(AgentPanelSiblingHost::new(
+            panel.downgrade(),
+            window.window_handle(),
+        )) as Rc<dyn agent::SiblingThreadHost>)
+    }
+
     pub fn focus_for_workspace(
         workspace: &mut Workspace,
         window: &mut Window,
@@ -4785,10 +4799,12 @@ impl AgentPanel {
         let Some(native_connection) = conversation_view.read(cx).as_native_connection(cx) else {
             return;
         };
-        let host = Rc::new(AgentPanelSiblingHost::new(
-            cx.weak_entity(),
-            window.window_handle(),
-        )) as Rc<dyn agent::SiblingThreadHost>;
+        let Some(panel) = cx.weak_entity().upgrade() else {
+            return;
+        };
+        let Some(host) = Self::sibling_thread_host_for_panel(&panel, window, cx) else {
+            return;
+        };
         native_connection.0.update(cx, |native_agent, _cx| {
             native_agent.set_sibling_thread_host(host);
         });

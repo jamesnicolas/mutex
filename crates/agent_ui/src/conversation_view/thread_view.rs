@@ -12261,7 +12261,7 @@ fn should_isolate_new_thread(eligibility: IsolatedNewThreadEligibility) -> bool 
         && eligibility.has_native_sibling_host
 }
 
-fn new_sibling_thread_run_identifier() -> String {
+pub(crate) fn new_sibling_thread_run_identifier() -> String {
     uuid::Uuid::new_v4()
         .simple()
         .to_string()
@@ -12311,7 +12311,7 @@ fn retry_in_new_worktree_request(
     }
 }
 
-fn isolated_thread_request(
+pub(crate) fn isolated_thread_request(
     prompt: &str,
     model: Option<String>,
     run_identifier: &str,
@@ -12328,7 +12328,14 @@ fn isolated_thread_request(
     }
 }
 
-fn prompt_title_prefix(prompt: &str) -> String {
+pub(crate) fn quick_task_thread_request(
+    prompt: &str,
+    run_identifier: &str,
+) -> agent::SiblingThreadRequest {
+    isolated_thread_request(prompt, None, run_identifier)
+}
+
+pub(crate) fn prompt_title_prefix(prompt: &str) -> String {
     let prefix = prompt
         .split_whitespace()
         .take(SIBLING_THREAD_TITLE_WORD_LIMIT)
@@ -12368,7 +12375,7 @@ fn prompt_worktree_name_prefix(prompt: &str, fallback: &str) -> String {
     base_name
 }
 
-fn isolated_thread_worktree_name(prompt: &str, run_identifier: &str) -> String {
+pub(crate) fn isolated_thread_worktree_name(prompt: &str, run_identifier: &str) -> String {
     let base_name = prompt_worktree_name_prefix(prompt, "isolated-thread");
     format!("{base_name}-{run_identifier}")
 }
@@ -12506,6 +12513,23 @@ mod tests {
             Some("fix-the-project-panel-crash-retry123".to_string())
         );
         assert_ne!(request.worktree_name, Some(previous_run_worktree_name));
+        assert_eq!(request.base_ref, None);
+    }
+
+    #[test]
+    fn test_quick_task_thread_request_runs_in_background_without_attempt_group() {
+        let request = quick_task_thread_request("Fan out the parser cleanup", "quick123");
+
+        assert_eq!(request.title.as_ref(), "Fan out the parser cleanup");
+        assert_eq!(request.prompt, "Fan out the parser cleanup");
+        assert_eq!(request.agent_id, None);
+        assert_eq!(request.model, None);
+        assert_eq!(request.parallel_attempt_group, None);
+        assert!(request.use_new_worktree);
+        assert_eq!(
+            request.worktree_name,
+            Some("fan-out-the-parser-cleanup-quick123".to_string())
+        );
         assert_eq!(request.base_ref, None);
     }
 

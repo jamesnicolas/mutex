@@ -176,6 +176,13 @@
     },
   },
   {
+    "context": "QuickTaskComposer > Editor && mode == auto_height",
+    "bindings": {
+      "enter": "menu::Confirm",
+      "shift-enter": "editor::Newline",
+    },
+  },
+  {
     "context": "Markdown",
     "bindings": {
       "copy": "markdown::Copy",
@@ -649,6 +656,7 @@
       "ctrl-n": "workspace::NewFile",
       "shift-new": "workspace::NewWindow",
       "ctrl-shift-n": "workspace::NewWindow",
+      "ctrl-alt-n": "agent::NewQuickTask",
       "ctrl-`": "terminal_panel::Toggle",
       "f10": ["app_menu::OpenApplicationMenu", "Mutex"],
       "alt-1": ["workspace::ActivatePane", 0],
