@@ -2621,9 +2621,32 @@ impl ConversationView {
         };
 
         let multi_workspace = multi_workspace.read(cx);
-        multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx)
+        multi_workspace.sidebar_open()
+            && multi_workspace.is_threads_list_view_active(cx)
+            && !self.is_active_thread_covered_in_agent_panel(&workspace, cx)
             || multi_workspace.workspace() == &workspace
                 && self.is_visible_in_agent_panel(&workspace, cx)
+    }
+
+    fn is_active_thread_covered_in_agent_panel(
+        &self,
+        workspace: &Entity<Workspace>,
+        cx: &Context<Self>,
+    ) -> bool {
+        workspace
+            .read_with(cx, |workspace, cx| AgentPanel::for_workspace(workspace, cx))
+            .is_some_and(|panel| {
+                let panel = panel.read(cx);
+                panel
+                    .active_conversation_view()
+                    .is_some_and(|conversation_view| {
+                        conversation_view.entity_id() == cx.entity_id()
+                    })
+                    && panel
+                        .visible_conversation_view()
+                        .map(|conversation_view| conversation_view.entity_id())
+                        != Some(cx.entity_id())
+            })
     }
 
     fn is_visible_in_agent_panel(&self, workspace: &Entity<Workspace>, cx: &Context<Self>) -> bool {

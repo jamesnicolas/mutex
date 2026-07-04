@@ -2870,7 +2870,10 @@ impl AgentPanel {
 
         if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
             let multi_workspace = multi_workspace.read(cx);
-            if multi_workspace.sidebar_open() && multi_workspace.is_threads_list_view_active(cx) {
+            if self.overlay_view.is_none()
+                && multi_workspace.sidebar_open()
+                && multi_workspace.is_threads_list_view_active(cx)
+            {
                 return true;
             }
 
@@ -9590,10 +9593,15 @@ mod tests {
             workspace.add_panel(panel.clone(), window, cx);
             panel
         });
-        open_thread_with_connection(&panel, StubAgentConnection::new(), &mut cx);
+        let connection = StubAgentConnection::new();
+        connection.set_next_prompt_updates(vec![acp::SessionUpdate::AgentMessageChunk(
+            acp::ContentChunk::new("Default response".into()),
+        )]);
+        open_thread_with_connection(&panel, connection, &mut cx);
         workspace.update_in(&mut cx, |workspace, window, cx| {
             AgentPanel::focus_for_workspace(workspace, window, cx);
         });
+        send_message(&panel, &mut cx);
         cx.run_until_parked();
 
         panel.update_in(&mut cx, |panel, window, cx| {
@@ -10551,6 +10559,19 @@ mod tests {
         panel.read_with(&cx, |panel, _cx| {
             assert_eq!(panel.active_terminal_id(), Some(second_terminal_id));
         });
+        let multi_workspace = cx.update(|window, _cx| {
+            window
+                .root::<MultiWorkspace>()
+                .flatten()
+                .expect("test window should have a MultiWorkspace root")
+        });
+        multi_workspace.update_in(&mut cx, |multi_workspace, window, cx| {
+            if multi_workspace.sidebar_open() {
+                multi_workspace.close_sidebar(window, cx);
+            }
+        });
+        cx.run_until_parked();
+
         panel.update(&mut cx, |panel, cx| {
             panel.emit_test_terminal_bell(first_terminal_id, cx);
         });
@@ -10561,14 +10582,8 @@ mod tests {
             .find_map(|window| window.downcast::<AgentNotification>())
             .expect("inactive terminal bell should show a notification");
 
-        cx.update(|window, cx| {
-            let multi_workspace = window
-                .root::<MultiWorkspace>()
-                .flatten()
-                .expect("test window should have a MultiWorkspace root");
-            multi_workspace.update(cx, |multi_workspace, cx| {
-                multi_workspace.open_sidebar(cx);
-            });
+        multi_workspace.update(&mut cx, |multi_workspace, cx| {
+            multi_workspace.open_sidebar(cx);
         });
         cx.run_until_parked();
 
