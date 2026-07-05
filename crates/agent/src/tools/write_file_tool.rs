@@ -1042,8 +1042,8 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_streaming_write_file_tool_registers_changed_buffers(cx: &mut TestAppContext) {
-        let (write_tool, _project, action_log, _fs, _thread) =
+    async fn test_streaming_write_file_tool_auto_accepts_changed_buffer(cx: &mut TestAppContext) {
+        let (write_tool, _project, action_log, fs, _thread) =
             setup_test(cx, json!({"file.txt": "original content"})).await;
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
@@ -1064,16 +1064,27 @@ mod tests {
         });
 
         let result = task.await;
-        assert!(result.is_ok(), "write should succeed: {:?}", result.err());
+        let EditSessionOutput::Success {
+            new_text, old_text, ..
+        } = result.expect("write should succeed")
+        else {
+            panic!("expected success");
+        };
+        assert_eq!(new_text, "completely new content");
+        assert_eq!(old_text.as_str(), "original content");
+        let on_disk = fs
+            .load(path!("/root/file.txt").as_ref())
+            .await
+            .expect("written file should be saved");
+        assert_eq!(on_disk, "completely new content");
 
         cx.run_until_parked();
 
         let changed =
             action_log.read_with(cx, |log, cx| log.changed_buffers(cx).collect::<Vec<_>>());
         assert!(
-            !changed.is_empty(),
-            "action_log.changed_buffers() should be non-empty after streaming write, \
-             but no changed buffers were found"
+            changed.is_empty(),
+            "native agent edits should be auto-accepted after streaming write"
         );
     }
 
@@ -1110,7 +1121,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_streaming_reject_created_file_deletes_it(cx: &mut TestAppContext) {
+    async fn test_streaming_auto_accepted_created_file_survives_reject_all(
+        cx: &mut TestAppContext,
+    ) {
         let (write_tool, _project, action_log, fs, _thread) =
             setup_test(cx, json!({"dir": {}})).await;
         cx.update(|cx| {
@@ -1119,7 +1132,6 @@ mod tests {
             agent_settings::AgentSettings::override_global(settings, cx);
         });
 
-        // Create a new file via the streaming write file tool
         let (event_stream, _rx) = ToolCallEventStream::test();
         let task = cx.update(|cx| {
             write_tool.clone().run(
@@ -1132,20 +1144,31 @@ mod tests {
             )
         });
         let result = task.await;
-        assert!(result.is_ok(), "create should succeed: {:?}", result.err());
+        let EditSessionOutput::Success {
+            new_text, old_text, ..
+        } = result.expect("create should succeed")
+        else {
+            panic!("expected success");
+        };
+        assert_eq!(new_text, "Hello, World!");
+        assert_eq!(old_text.as_str(), "");
         cx.run_until_parked();
 
         assert!(
             fs.is_file(path!("/root/dir/new_file.txt").as_ref()).await,
             "file should exist after creation"
         );
+        let on_disk = fs
+            .load(path!("/root/dir/new_file.txt").as_ref())
+            .await
+            .expect("created file should be saved");
+        assert_eq!(on_disk, "Hello, World!");
 
-        // Reject all edits — this should delete the newly created file
         let changed =
             action_log.read_with(cx, |log, cx| log.changed_buffers(cx).collect::<Vec<_>>());
         assert!(
-            !changed.is_empty(),
-            "action_log should track the created file as changed"
+            changed.is_empty(),
+            "native agent file creation should be auto-accepted"
         );
 
         action_log
@@ -1154,9 +1177,14 @@ mod tests {
         cx.run_until_parked();
 
         assert!(
-            !fs.is_file(path!("/root/dir/new_file.txt").as_ref()).await,
-            "file should be deleted after rejecting creation, but an empty file was left behind"
+            fs.is_file(path!("/root/dir/new_file.txt").as_ref()).await,
+            "reject_all_edits should not delete an auto-accepted file creation"
         );
+        let on_disk = fs
+            .load(path!("/root/dir/new_file.txt").as_ref())
+            .await
+            .expect("auto-accepted file should remain saved");
+        assert_eq!(on_disk, "Hello, World!");
     }
 
     /// When the buffer has unsaved user edits and the user picks

@@ -2596,11 +2596,11 @@ mod tests {
         assert_eq!(new_text, "HELLO\nWORLD\n");
     }
 
-    // Verifies that after streaming_edit_file_tool edits a file, the action log
-    // reports changed buffers for downstream diff handling.
+    // Native agent edits are auto-accepted, so completed edits should not stay
+    // in the action log's review queue.
     #[gpui::test]
-    async fn test_streaming_edit_file_tool_registers_changed_buffers(cx: &mut TestAppContext) {
-        let (edit_tool, _project, action_log, _fs, _thread) =
+    async fn test_streaming_edit_file_tool_auto_accepts_changed_buffer(cx: &mut TestAppContext) {
+        let (edit_tool, _project, action_log, fs, _thread) =
             setup_test(cx, json!({"file.txt": "line 1\nline 2\nline 3\n"})).await;
         cx.update(|cx| {
             let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
@@ -2624,16 +2624,24 @@ mod tests {
         });
 
         let result = task.await;
-        assert!(result.is_ok(), "edit should succeed: {:?}", result.err());
+        let EditFileToolOutput::Success { new_text, .. } = result.expect("edit should succeed")
+        else {
+            panic!("expected success");
+        };
+        assert_eq!(new_text, "line 1\nmodified line 2\nline 3\n");
+        let on_disk = fs
+            .load(path!("/root/file.txt").as_ref())
+            .await
+            .expect("edited file should be saved");
+        assert_eq!(on_disk, "line 1\nmodified line 2\nline 3\n");
 
         cx.run_until_parked();
 
         let changed =
             action_log.read_with(cx, |log, cx| log.changed_buffers(cx).collect::<Vec<_>>());
         assert!(
-            !changed.is_empty(),
-            "action_log.changed_buffers() should be non-empty after streaming edit,
-             but no changed buffers were found"
+            changed.is_empty(),
+            "native agent edits should be auto-accepted after streaming edit"
         );
     }
 
