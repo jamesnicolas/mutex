@@ -11,8 +11,8 @@ hands. Check items off with the commit hash that landed them.
 - [ ] Branch / worktree selector on the new chat screen
 - [ ] "Where to work" selector — "Work locally" vs a remote machine
       (filler UI is fine until the real orchestration/remote work lands)
-- [ ] Composer should grow in height with multiple lines (currently fixed)
-- [ ] Composer typing area is a different color from the composer box —
+- [x] Composer should grow in height with multiple lines (currently fixed)
+- [x] Composer typing area is a different color from the composer box —
       make them the same color
 
 ## Chrome / de-Zed-ing
