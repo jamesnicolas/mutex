@@ -107,6 +107,7 @@ message AgentThreadMetadata {
   AgentThreadPathList main_worktree_paths = 12;
   optional string remote_connection_json = 13;
   bool archived = 14;
+  bool server_hosted = 15;
 }
 
 message ListAgentThreads {
@@ -168,4 +169,33 @@ message AgentSessionPrompt {
 
 message AgentSessionCancel {
   string session_id = 1;
+}
+
+message SerializedAgentThreadEvent {
+  string variant = 1;
+  optional string payload_json = 2;
+  string debug = 3;
+}
+
+message BufferedAgentSessionEvent {
+  uint64 sequence = 1;
+  SerializedAgentThreadEvent event = 2;
+}
+
+message SubscribeAgentSession {
+  string session_id = 1;
+  uint64 from_sequence = 2;
+}
+
+message SubscribeAgentSessionResponse {
+  uint64 snapshot_sequence = 1;
+  bool gap = 2;
+  repeated SerializedAgentThreadEvent snapshot = 3;
+  repeated BufferedAgentSessionEvent events = 4;
+}
+
+message AgentSessionEvent {
+  string session_id = 1;
+  uint64 sequence = 2;
+  SerializedAgentThreadEvent event = 3;
 }

@@ -7,7 +7,8 @@ use acp_thread::{
 use acp_thread::{AgentConnection, Plan};
 use action_log::{ActionLog, ActionLogTelemetry, DiffStats};
 use agent::{
-    NativeAgentServer, NativeAgentSessionList, NoModelConfiguredError, SharedThread, ThreadStore,
+    NativeAgentServer, NativeAgentSessionList, NoModelConfiguredError, RemoteAgentConnection,
+    SharedThread, ThreadStore,
 };
 use agent_client_protocol::schema::v1 as acp;
 #[cfg(test)]
@@ -824,6 +825,7 @@ impl ConversationView {
                 connection_store,
                 connection_key,
                 resume_session_id,
+                thread_id,
                 work_dirs,
                 title,
                 project,
@@ -890,6 +892,7 @@ impl ConversationView {
             self.connection_store.clone(),
             self.connection_key.clone(),
             resume_session_id,
+            self.thread_id,
             work_dirs,
             title,
             self.project.clone(),
@@ -910,11 +913,43 @@ impl ConversationView {
         cx.notify();
     }
 
+    fn remote_agent_connection_for_thread(
+        connection_key: &Agent,
+        resume_session_id: Option<&acp::SessionId>,
+        thread_id: ThreadId,
+        project: &Entity<Project>,
+        cx: &App,
+    ) -> Option<Rc<dyn AgentConnection>> {
+        if connection_key != &Agent::NativeAgent {
+            return None;
+        }
+
+        let remote_client = project.read(cx).remote_client()?;
+        let should_host_new_thread =
+            resume_session_id.is_none() && AgentSettings::get_global(cx).host_threads_on_remote;
+        let is_server_hosted_thread = ThreadMetadataStore::try_global(cx)
+            .and_then(|store| store.read(cx).entry(thread_id).cloned())
+            .or_else(|| {
+                let session_id = resume_session_id?;
+                ThreadMetadataStore::try_global(cx)
+                    .and_then(|store| store.read(cx).entry_by_session(session_id).cloned())
+            })
+            .is_some_and(|metadata| metadata.server_hosted);
+
+        if !should_host_new_thread && !is_server_hosted_thread {
+            return None;
+        }
+
+        let proto_client = remote_client.read(cx).proto_client();
+        Some(Rc::new(RemoteAgentConnection::new(proto_client)) as Rc<dyn AgentConnection>)
+    }
+
     fn initial_state(
         agent: Rc<dyn AgentServer>,
         connection_store: Entity<AgentConnectionStore>,
         connection_key: Agent,
         resume_session_id: Option<acp::SessionId>,
+        thread_id: ThreadId,
         work_dirs: Option<PathList>,
         title: Option<SharedString>,
         project: Entity<Project>,
@@ -934,27 +969,45 @@ impl ConversationView {
         }
         let session_work_dirs = work_dirs.unwrap_or_else(|| project.read(cx).default_path_list(cx));
 
-        let connection_entry = connection_store.update(cx, |store, cx| {
-            store.request_connection(connection_key, agent.clone(), cx)
-        });
+        let remote_connection = Self::remote_agent_connection_for_thread(
+            &connection_key,
+            resume_session_id.as_ref(),
+            thread_id,
+            &project,
+            cx,
+        );
+        let (connect_result, connection_entry_subscription) =
+            if let Some(connection) = remote_connection {
+                (
+                    Task::ready(Ok(AgentConnectedState { connection })).shared(),
+                    Subscription::new(|| {}),
+                )
+            } else {
+                let connection_entry = connection_store.update(cx, |store, cx| {
+                    store.request_connection(connection_key, agent.clone(), cx)
+                });
 
-        let connection_entry_subscription =
-            cx.subscribe(&connection_entry, |this, _entry, event, cx| match event {
-                AgentConnectionEntryEvent::NewVersionAvailable(version) => {
-                    if let Some(thread) = this.root_thread_view() {
-                        thread.update(cx, |thread, cx| {
-                            thread.new_server_version_available = Some(version.clone());
+                let connection_entry_subscription =
+                    cx.subscribe(&connection_entry, |this, _entry, event, cx| match event {
+                        AgentConnectionEntryEvent::NewVersionAvailable(version) => {
+                            if let Some(thread) = this.root_thread_view() {
+                                thread.update(cx, |thread, cx| {
+                                    thread.new_server_version_available = Some(version.clone());
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        AgentConnectionEntryEvent::LoadingStatusChanged(status) => {
+                            this.loading_status = status.clone();
                             cx.notify();
-                        });
-                    }
-                }
-                AgentConnectionEntryEvent::LoadingStatusChanged(status) => {
-                    this.loading_status = status.clone();
-                    cx.notify();
-                }
-            });
+                        }
+                    });
 
-        let connect_result = connection_entry.read(cx).wait_for_connection();
+                (
+                    connection_entry.read(cx).wait_for_connection(),
+                    connection_entry_subscription,
+                )
+            };
 
         let side = crate::agent_sidebar_side(cx);
         let thread_location = "current_worktree";
@@ -4137,6 +4190,7 @@ pub(crate) mod tests {
                         worktree_paths: WorktreePaths::from_folder_paths(&PathList::default()),
                         remote_connection: None,
                         archived: false,
+                        server_hosted: false,
                     },
                     cx,
                 );

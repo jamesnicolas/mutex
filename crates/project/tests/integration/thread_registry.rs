@@ -33,6 +33,7 @@ fn test_metadata() -> ThreadMetadata {
         worktree_paths: WorktreePaths::from_folder_paths(&folder_paths),
         remote_connection: None,
         archived: false,
+        server_hosted: false,
     }
 }
 

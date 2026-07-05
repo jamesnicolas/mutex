@@ -54,6 +54,7 @@ project.workspace = true
 prompt_store.workspace = true
 quick-xml.workspace = true
 regex.workspace = true
+rpc.workspace = true
 rust-embed.workspace = true
 sandbox.workspace = true
 schemars.workspace = true

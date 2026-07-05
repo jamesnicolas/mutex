@@ -89,6 +89,7 @@ pub struct ThreadMetadata {
     pub worktree_paths: WorktreePaths,
     pub remote_connection: Option<RemoteConnectionOptions>,
     pub archived: bool,
+    pub server_hosted: bool,
 }
 
 impl ThreadMetadata {
@@ -157,6 +158,7 @@ impl ThreadMetadata {
             main_worktree_paths: Some(path_list_to_proto(self.main_worktree_paths())),
             remote_connection_json,
             archived: self.archived,
+            server_hosted: self.server_hosted,
         })
     }
 
@@ -209,6 +211,7 @@ impl ThreadMetadata {
             worktree_paths,
             remote_connection,
             archived: thread.archived,
+            server_hosted: thread.server_hosted,
         })
     }
 }

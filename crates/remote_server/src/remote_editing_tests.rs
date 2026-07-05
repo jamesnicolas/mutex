@@ -3,9 +3,9 @@
 /// We neead to find a way to test Windows-Non-Windows interactions.
 use crate::headless_project::HeadlessProject;
 use agent::{
-    AgentTool, NativeAgent, NativeAgentConnection, ReadFileTool, ReadFileToolInput, SkillTool,
-    SkillToolInput, SkillToolOutput, Templates, ThreadStore, ToolCallEventStream, ToolInput,
-    skill_body_resolver_for_project, skills_resolver_for_project,
+    AgentTool, NativeAgent, NativeAgentConnection, ReadFileTool, ReadFileToolInput,
+    SerializableThreadEvent, SkillTool, SkillToolInput, SkillToolOutput, Templates, ThreadStore,
+    ToolCallEventStream, ToolInput, skill_body_resolver_for_project, skills_resolver_for_project,
 };
 use client::{Client, UserStore};
 use clock::FakeSystemClock;
@@ -2639,6 +2639,7 @@ async fn test_native_agent_turn_runs_in_remote_server(
                 }),
                 remote_connection_json: None,
                 archived: false,
+                server_hosted: true,
             }),
         })
         .await
@@ -2665,6 +2666,19 @@ async fn test_native_agent_turn_runs_in_remote_server(
     assert!(registry.threads.iter().any(|thread| {
         thread.thread_id == thread_id && thread.session_id.as_deref() == Some(session_id.as_str())
     }));
+
+    let live_events_rx = project::subscribe_agent_session_events(&session_id);
+    let empty_subscribe_response = proto_client
+        .request(proto::SubscribeAgentSession {
+            session_id: session_id.clone(),
+            from_sequence: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(empty_subscribe_response.snapshot_sequence, 0);
+    assert!(!empty_subscribe_response.gap);
+    assert!(empty_subscribe_response.snapshot.is_empty());
+    assert!(empty_subscribe_response.events.is_empty());
 
     proto_client
         .request(proto::AgentSessionPrompt {
@@ -2703,6 +2717,7 @@ async fn test_native_agent_turn_runs_in_remote_server(
             break;
         }
     }
+    cx.run_until_parked();
 
     let events = headless.update(server_cx, |headless, cx| {
         headless.agent_session_host.read(cx).buffered_events(
@@ -2727,9 +2742,124 @@ async fn test_native_agent_turn_runs_in_remote_server(
                 == Some("server-side answer")
     }));
     assert!(events.iter().any(|event| event.event.variant == "stop"));
+    let mut live_events = Vec::new();
+    while let Ok(event) = live_events_rx.try_recv() {
+        live_events.push(event);
+    }
+    assert_eq!(
+        live_events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (0..events.len() as u64).collect::<Vec<_>>()
+    );
+    assert!(live_events.iter().any(|event| {
+        event
+            .event
+            .as_ref()
+            .is_some_and(|event| event.variant == "stop")
+    }));
     headless.update(server_cx, |headless, cx| {
         assert_eq!(headless.agent_session_host.read(cx).running_turn_count(), 0);
     });
+
+    let subscribe_response = proto_client
+        .request(proto::SubscribeAgentSession {
+            session_id: session_id.clone(),
+            from_sequence: 0,
+        })
+        .await
+        .unwrap();
+    assert!(!subscribe_response.gap);
+    assert_eq!(subscribe_response.snapshot_sequence, events.len() as u64);
+    assert_eq!(
+        subscribe_response
+            .events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (0..events.len() as u64).collect::<Vec<_>>()
+    );
+    assert!(subscribe_response.snapshot.iter().any(|event| {
+        event.variant == "agent_text"
+            && event
+                .payload_json
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|payload| {
+                    payload
+                        .get("text")
+                        .and_then(|text| text.as_str().map(str::to_owned))
+                })
+                .as_deref()
+                == Some("server-side answer")
+    }));
+    assert!(
+        subscribe_response
+            .snapshot
+            .iter()
+            .any(|event| event.variant == "user_message")
+    );
+    assert!(subscribe_response.events.iter().any(|event| {
+        event
+            .event
+            .as_ref()
+            .is_some_and(|event| event.variant == "stop")
+    }));
+
+    headless.update(server_cx, |headless, cx| {
+        let session_id = agent_client_protocol::schema::v1::SessionId::new(session_id.clone());
+        let host = headless.agent_session_host.read(cx);
+        for index in 0..1030 {
+            host.push_test_event(
+                &session_id,
+                SerializableThreadEvent {
+                    variant: "agent_text".into(),
+                    payload: Some(json!({ "text": format!("overflow-{index}") })),
+                    debug: "test overflow".into(),
+                },
+            );
+        }
+    });
+
+    let stale_subscribe_response = proto_client
+        .request(proto::SubscribeAgentSession {
+            session_id: session_id.clone(),
+            from_sequence: 1,
+        })
+        .await
+        .unwrap();
+    assert!(stale_subscribe_response.gap);
+    assert_eq!(
+        stale_subscribe_response.snapshot_sequence,
+        events.len() as u64 + 1030
+    );
+    assert!(
+        stale_subscribe_response
+            .events
+            .first()
+            .is_some_and(|event| {
+                event.sequence > 1
+                    && event
+                        .event
+                        .as_ref()
+                        .is_some_and(|event| event.variant == "agent_text")
+            })
+    );
+    assert!(stale_subscribe_response.snapshot.iter().any(|event| {
+        event.variant == "agent_text"
+            && event
+                .payload_json
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|payload| {
+                    payload
+                        .get("text")
+                        .and_then(|text| text.as_str().map(str::to_owned))
+                })
+                .as_deref()
+                == Some("server-side answer")
+    }));
 }
 
 #[gpui::test]

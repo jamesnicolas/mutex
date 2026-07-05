@@ -1130,6 +1130,11 @@
     //
     // Default: false
     "isolate_new_threads": false,
+    // When enabled, native agent threads for remote projects are hosted by
+    // the remote server instead of the local client.
+    //
+    // Default: false
+    "host_threads_on_remote": false,
     // Settings for automatic agent context compaction, which summarizes earlier
     // messages to free up room in the model's context window once it grows too
     // large.

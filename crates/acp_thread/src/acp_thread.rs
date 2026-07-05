@@ -1761,6 +1761,20 @@ impl AcpThread {
         &self.entries
     }
 
+    pub fn reset_entries_for_replay(&mut self, cx: &mut Context<Self>) {
+        Self::flush_streaming_text(&mut self.streaming_text_buffer, cx);
+        let range = 0..self.entries.len();
+        self.entries.clear();
+        self.plan.entries.clear();
+        self.terminals.clear();
+        self.pending_terminal_output.clear();
+        self.pending_terminal_exit.clear();
+        self.had_error = false;
+        if !range.is_empty() {
+            cx.emit(AcpThreadEvent::EntriesRemoved(range));
+        }
+    }
+
     pub fn is_compacting(&self) -> bool {
         self.entries.last().is_some_and(|entry| {
             matches!(

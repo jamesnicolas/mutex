@@ -278,6 +278,11 @@ pub struct AgentSettingsContent {
     ///
     /// Default: false
     pub isolate_new_threads: Option<bool>,
+    /// When enabled, native agent threads for remote projects are hosted by
+    /// the remote server instead of the local client.
+    ///
+    /// Default: false
+    pub host_threads_on_remote: Option<bool>,
     /// Additional parameters for language model requests. When making a request
     /// to a model, parameters will be taken from the last entry in this list
     /// that matches the model's provider and name. In each entry, both provider

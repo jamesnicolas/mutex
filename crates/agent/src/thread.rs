@@ -929,6 +929,137 @@ impl SerializableThreadEvent {
             debug: format!("{event:?}"),
         }
     }
+
+    pub fn to_thread_event(&self) -> Result<ThreadEvent> {
+        fn payload<T: DeserializeOwned>(event: &SerializableThreadEvent) -> Result<T> {
+            let payload = event
+                .payload
+                .clone()
+                .context("serialized thread event is missing payload")?;
+            serde_json::from_value(payload)
+                .with_context(|| format!("deserialize serialized thread event {}", event.variant))
+        }
+
+        fn text_payload(event: &SerializableThreadEvent) -> Result<String> {
+            event
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("text"))
+                .and_then(|text| text.as_str())
+                .map(ToOwned::to_owned)
+                .context("serialized text thread event is missing text")
+        }
+
+        fn context_compaction_status(value: &str) -> Result<acp_thread::ContextCompactionStatus> {
+            match value {
+                "InProgress" => Ok(acp_thread::ContextCompactionStatus::InProgress),
+                "Completed" => Ok(acp_thread::ContextCompactionStatus::Completed),
+                "Canceled" => Ok(acp_thread::ContextCompactionStatus::Canceled),
+                other => Err(anyhow!("unknown context compaction status {other}")),
+            }
+        }
+
+        #[derive(Deserialize)]
+        struct SubagentSpawnedPayload {
+            session_id: String,
+        }
+
+        #[derive(Deserialize)]
+        struct RetryPayload {
+            last_error: String,
+            attempt: usize,
+            max_attempts: usize,
+            duration_ms: u64,
+            meta: Option<acp::Meta>,
+        }
+
+        #[derive(Deserialize)]
+        struct ContextCompactionPayload {
+            id: String,
+            status: String,
+        }
+
+        #[derive(Deserialize)]
+        struct ContextCompactionUpdatePayload {
+            id: String,
+            summary_delta: String,
+            status: Option<String>,
+        }
+
+        match self.variant.as_str() {
+            "user_message" => Ok(ThreadEvent::UserMessage(payload(self)?)),
+            "agent_text" => Ok(ThreadEvent::AgentText(text_payload(self)?)),
+            "agent_thinking" => Ok(ThreadEvent::AgentThinking(text_payload(self)?)),
+            "tool_call" => Ok(ThreadEvent::ToolCall(payload(self)?)),
+            "tool_call_update" => {
+                if self
+                    .payload
+                    .as_ref()
+                    .and_then(|payload| payload.get("kind"))
+                    .is_some()
+                {
+                    return Err(anyhow!(
+                        "serialized diff and terminal tool updates cannot be replayed"
+                    ));
+                }
+                Ok(ThreadEvent::ToolCallUpdate(
+                    acp_thread::ToolCallUpdate::UpdateFields(payload(self)?),
+                ))
+            }
+            "tool_call_authorization" => Err(anyhow!(
+                "serialized tool authorization events are not supported"
+            )),
+            "tool_call_authorization_resolved" => Err(anyhow!(
+                "serialized tool authorization resolution events are not supported"
+            )),
+            "subagent_spawned" => {
+                let payload: SubagentSpawnedPayload = payload(self)?;
+                Ok(ThreadEvent::SubagentSpawned(acp::SessionId::new(
+                    payload.session_id,
+                )))
+            }
+            "retry" => {
+                let payload: RetryPayload = payload(self)?;
+                let duration = Duration::from_millis(payload.duration_ms);
+                Ok(ThreadEvent::Retry(acp_thread::RetryStatus {
+                    last_error: payload.last_error.into(),
+                    attempt: payload.attempt,
+                    max_attempts: payload.max_attempts,
+                    started_at: Instant::now()
+                        .checked_sub(duration)
+                        .unwrap_or_else(Instant::now),
+                    duration,
+                    meta: payload.meta,
+                }))
+            }
+            "context_compaction" => {
+                let payload: ContextCompactionPayload = payload(self)?;
+                Ok(ThreadEvent::ContextCompaction(
+                    acp_thread::ContextCompaction {
+                        id: acp_thread::ContextCompactionId(payload.id.into()),
+                        status: context_compaction_status(&payload.status)?,
+                        summary: None,
+                    },
+                ))
+            }
+            "context_compaction_update" => {
+                let payload: ContextCompactionUpdatePayload = payload(self)?;
+                Ok(ThreadEvent::ContextCompactionUpdate(
+                    acp_thread::ContextCompactionUpdate {
+                        id: acp_thread::ContextCompactionId(payload.id.into()),
+                        summary_delta: payload.summary_delta,
+                        status: payload
+                            .status
+                            .as_deref()
+                            .map(context_compaction_status)
+                            .transpose()?,
+                    },
+                ))
+            }
+            "stop" => Ok(ThreadEvent::Stop(payload(self)?)),
+            other => Err(anyhow!("unknown serialized thread event variant {other}")),
+        }
+    }
 }
 
 #[derive(Debug)]

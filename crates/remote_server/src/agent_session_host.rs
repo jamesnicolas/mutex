@@ -3,9 +3,10 @@ use agent_client_protocol::schema::v1 as acp;
 use agent_settings::{AgentProfileId, AgentSettings, builtin_profiles};
 use anyhow::{Context as _, Result, anyhow};
 use client::{Client, UserStore};
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 use credentials_provider::CredentialsProvider;
 use fs::Fs;
+use futures::StreamExt as _;
 use gpui::{AppContext as _, AsyncApp, Context, Entity, Task};
 use http_client::HttpClient;
 use language::LanguageRegistry;
@@ -224,18 +225,42 @@ struct SessionEventBuffer {
 }
 
 impl SessionEventBuffer {
-    fn push(&mut self, event: SerializableThreadEvent, limit: usize) {
+    fn push(&mut self, event: SerializableThreadEvent, limit: usize) -> BufferedAgentEvent {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        self.events
-            .push_back(BufferedAgentEvent { sequence, event });
+        let event = BufferedAgentEvent { sequence, event };
+        self.events.push_back(event.clone());
         while self.events.len() > limit {
             self.events.pop_front();
         }
+        event
     }
 
     fn events(&self) -> Vec<BufferedAgentEvent> {
         self.events.iter().cloned().collect()
+    }
+
+    fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    fn first_sequence(&self) -> u64 {
+        self.events
+            .front()
+            .map(|event| event.sequence)
+            .unwrap_or(self.next_sequence)
+    }
+
+    fn has_gap_before(&self, from_sequence: u64) -> bool {
+        from_sequence < self.first_sequence() && from_sequence < self.next_sequence
+    }
+
+    fn events_from(&self, from_sequence: u64) -> Vec<BufferedAgentEvent> {
+        self.events
+            .iter()
+            .filter(|event| event.sequence >= from_sequence)
+            .cloned()
+            .collect()
     }
 }
 
@@ -257,6 +282,7 @@ pub struct AgentSessionHost {
     credentials_provider: Arc<InMemoryAgentCredentialsProvider>,
     project: Option<Entity<Project>>,
     sessions: HashMap<acp::SessionId, HostedAgentSession>,
+    subscribed_sessions: Arc<Mutex<HashSet<acp::SessionId>>>,
     turn_activity: AgentTurnActivity,
     running_turn_count: usize,
 }
@@ -267,6 +293,7 @@ impl AgentSessionHost {
         session.add_request_handler(host.downgrade(), Self::handle_create_agent_session);
         session.add_request_handler(host.downgrade(), Self::handle_agent_session_prompt);
         session.add_request_handler(host.downgrade(), Self::handle_agent_session_cancel);
+        session.add_request_handler(host.downgrade(), Self::handle_subscribe_agent_session);
     }
 
     pub fn new(
@@ -315,6 +342,7 @@ impl AgentSessionHost {
             credentials_provider,
             project: None,
             sessions: HashMap::default(),
+            subscribed_sessions: Arc::new(Mutex::new(HashSet::default())),
             turn_activity,
             running_turn_count: 0,
         }
@@ -380,6 +408,7 @@ impl AgentSessionHost {
                 .update(|cx| connection.thread(&session_id, cx))
                 .context("new native agent session did not register a thread")?;
             metadata.session_id = Some(session_id.clone());
+            metadata.server_hosted = true;
 
             this.update(cx, |this, cx| {
                 let events = Arc::new(Mutex::new(SessionEventBuffer::default()));
@@ -416,6 +445,8 @@ impl AgentSessionHost {
 
         let connection = self.connection.clone();
         let events = session.events.clone();
+        let proto_session = self.session.clone();
+        let subscribed_sessions = self.subscribed_sessions.clone();
         let turn_guard = self.turn_activity.start_turn();
         self.running_turn_count += 1;
 
@@ -423,10 +454,19 @@ impl AgentSessionHost {
             let session_id = session_id.clone();
             async move |this, cx| {
                 let prompt_task = cx.update(|cx| {
+                    let event_session_id = session_id.clone();
                     connection.prompt_headless(
                         session_id.clone(),
                         prompt_markdown,
-                        move |event| push_buffered_event(&events, event),
+                        move |event| {
+                            push_buffered_event(
+                                &event_session_id,
+                                &events,
+                                &proto_session,
+                                &subscribed_sessions,
+                                event,
+                            )
+                        },
                         cx,
                     )
                 });
@@ -470,6 +510,20 @@ impl AgentSessionHost {
             .get(session_id)
             .and_then(|session| session.events.lock().ok().map(|events| events.events()))
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub fn push_test_event(&self, session_id: &acp::SessionId, event: SerializableThreadEvent) {
+        if let Some(session) = self.sessions.get(session_id) {
+            match session.events.lock() {
+                Ok(mut events) => {
+                    events.push(event, AGENT_EVENT_BUFFER_LIMIT);
+                }
+                Err(error) => {
+                    log::error!("failed to buffer test agent event: {error}");
+                }
+            }
+        }
     }
 
     pub fn has_lazy_project(&self) -> bool {
@@ -550,9 +604,73 @@ impl AgentSessionHost {
         this.update(&mut cx, |this, cx| this.cancel_session(&session_id, cx))?;
         Ok(proto::Ack {})
     }
+
+    async fn handle_subscribe_agent_session(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::SubscribeAgentSession>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::SubscribeAgentSessionResponse> {
+        let session_id = acp::SessionId::new(envelope.payload.session_id);
+        let from_sequence = envelope.payload.from_sequence;
+        let (snapshot_sequence, gap, mut replay) = this.update(&mut cx, |this, cx| {
+            let session = this
+                .sessions
+                .get(&session_id)
+                .context("agent session not found")?;
+            let (snapshot_sequence, gap) = {
+                let events = session
+                    .events
+                    .lock()
+                    .map_err(|_| anyhow!("agent session events lock poisoned"))?;
+                (events.next_sequence(), events.has_gap_before(from_sequence))
+            };
+            this.subscribed_sessions
+                .lock()
+                .map_err(|_| anyhow!("agent session subscriptions lock poisoned"))?
+                .insert(session_id.clone());
+            let replay = session.thread.update(cx, |thread, cx| thread.replay(cx));
+            anyhow::Ok((snapshot_sequence, gap, replay))
+        })?;
+
+        let mut snapshot = Vec::new();
+        while let Some(event) = replay.next().await {
+            snapshot.push(serializable_event_to_proto(
+                &SerializableThreadEvent::from_thread_event(&event?),
+            )?);
+        }
+
+        let events = this.update(&mut cx, |this, _cx| {
+            let session = this
+                .sessions
+                .get(&session_id)
+                .context("agent session not found")?;
+            let events = session
+                .events
+                .lock()
+                .map_err(|_| anyhow!("agent session events lock poisoned"))?;
+            events
+                .events_from(from_sequence)
+                .iter()
+                .map(buffered_event_to_proto)
+                .collect::<Result<Vec<_>>>()
+        })?;
+
+        Ok(proto::SubscribeAgentSessionResponse {
+            snapshot_sequence,
+            gap,
+            snapshot,
+            events,
+        })
+    }
 }
 
-fn push_buffered_event(events: &Arc<Mutex<SessionEventBuffer>>, event: SerializableThreadEvent) {
+fn push_buffered_event(
+    session_id: &acp::SessionId,
+    events: &Arc<Mutex<SessionEventBuffer>>,
+    proto_session: &AnyProtoClient,
+    subscribed_sessions: &Arc<Mutex<HashSet<acp::SessionId>>>,
+    event: SerializableThreadEvent,
+) {
     match events.lock() {
         Ok(mut events) => {
             let sequence = events.next_sequence;
@@ -561,10 +679,52 @@ fn push_buffered_event(events: &Arc<Mutex<SessionEventBuffer>>, event: Serializa
                 sequence,
                 event.variant
             );
-            events.push(event, AGENT_EVENT_BUFFER_LIMIT);
+            let event = events.push(event, AGENT_EVENT_BUFFER_LIMIT);
+            if subscribed_sessions
+                .lock()
+                .map(|sessions| sessions.contains(session_id))
+                .unwrap_or(false)
+            {
+                match buffered_event_to_proto(&event) {
+                    Ok(event) => {
+                        proto_session
+                            .send(proto::AgentSessionEvent {
+                                session_id: session_id.0.to_string(),
+                                sequence: event.sequence,
+                                event: event.event,
+                            })
+                            .log_err();
+                    }
+                    Err(error) => {
+                        log::error!("failed to serialize server-side agent event: {error:?}");
+                    }
+                }
+            }
         }
         Err(error) => {
             log::error!("failed to buffer server-side agent event: {error}");
         }
     }
+}
+
+fn buffered_event_to_proto(event: &BufferedAgentEvent) -> Result<proto::BufferedAgentSessionEvent> {
+    Ok(proto::BufferedAgentSessionEvent {
+        sequence: event.sequence,
+        event: Some(serializable_event_to_proto(&event.event)?),
+    })
+}
+
+fn serializable_event_to_proto(
+    event: &SerializableThreadEvent,
+) -> Result<proto::SerializedAgentThreadEvent> {
+    Ok(proto::SerializedAgentThreadEvent {
+        variant: event.variant.clone(),
+        payload_json: event
+            .payload
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("serialize agent thread event payload")?,
+        debug: event.debug.clone(),
+    })
 }

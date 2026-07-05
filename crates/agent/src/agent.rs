@@ -3,6 +3,7 @@ mod legacy_thread;
 mod native_agent_server;
 pub mod outline;
 mod pattern_extraction;
+mod remote_agent_connection;
 mod sandboxing;
 mod templates;
 #[cfg(test)]
@@ -17,6 +18,7 @@ pub use db::*;
 use itertools::Itertools;
 pub use native_agent_server::NativeAgentServer;
 pub use pattern_extraction::*;
+pub use remote_agent_connection::RemoteAgentConnection;
 pub use shell_command_parser::extract_commands;
 pub use templates::*;
 pub use thread::*;
@@ -2238,150 +2240,14 @@ impl NativeAgentConnection {
                         log::trace!("Received completion event: {:?}", event);
                         on_event(SerializableThreadEvent::from_thread_event(&event));
 
-                        match event {
-                            ThreadEvent::UserMessage(message) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    for content in &*message.content {
-                                        thread.push_user_content_block(
-                                            Some(message.id.clone()),
-                                            content.clone().into(),
-                                            cx,
-                                        );
-                                    }
-                                })?;
-                            }
-                            ThreadEvent::AgentText(text) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.push_assistant_content_block(text.into(), false, cx)
-                                })?;
-                            }
-                            ThreadEvent::AgentThinking(text) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.push_assistant_content_block(text.into(), true, cx)
-                                })?;
-                            }
-                            ThreadEvent::ToolCallAuthorization(ToolCallAuthorization {
-                                tool_call,
-                                options,
-                                response,
-                                context: _,
-                                kind,
-                            }) => match authorization_mode {
-                                ThreadEventAuthorizationMode::RequestFromAcpThread => {
-                                    let acp_thread = acp_thread
-                                        .as_ref()
-                                        .context("missing AcpThread for authorization")?;
-                                    let outcome_task = acp_thread.update(cx, |thread, cx| {
-                                        thread.request_tool_call_authorization(
-                                            tool_call, options, kind, cx,
-                                        )
-                                    })??;
-                                    cx.background_spawn(async move {
-                                        if let acp_thread::RequestPermissionOutcome::Selected(
-                                            outcome,
-                                        ) = outcome_task.await
-                                        {
-                                            response
-                                                .send(outcome)
-                                                .map_err(|_| {
-                                                    anyhow!("authorization receiver was dropped")
-                                                })
-                                                .log_err();
-                                        }
-                                    })
-                                    .detach();
-                                }
-                                ThreadEventAuthorizationMode::AutoDeny => {
-                                    let outcome = auto_deny_permission_outcome(&options)?;
-                                    response
-                                        .send(outcome)
-                                        .map_err(|_| anyhow!("authorization receiver was dropped"))
-                                        .log_err();
-                                }
-                            },
-                            ThreadEvent::ToolCallAuthorizationResolved {
-                                tool_call_id,
-                                outcome,
-                            } => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.authorize_tool_call(tool_call_id, outcome, cx);
-                                })?;
-                            }
-                            ThreadEvent::ToolCall(tool_call) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.upsert_tool_call(tool_call, cx)
-                                })??;
-                            }
-                            ThreadEvent::ToolCallUpdate(update) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.update_tool_call(update, cx)
-                                })??;
-                            }
-                            ThreadEvent::SubagentSpawned(session_id) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.subagent_spawned(session_id, cx);
-                                })?;
-                            }
-                            ThreadEvent::Retry(status) => {
-                                if acp_thread::refusal_fallback_model_from_meta(&status.meta)
-                                    .is_some()
-                                {
-                                    if let Some(connection) = &connection {
-                                        cx.update(|cx| {
-                                            connection.0.update(cx, |agent, _| {
-                                                agent.models.notify_model_selection_changed();
-                                            });
-                                        });
-                                    }
-                                }
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.update_retry_status(status, cx)
-                                })?;
-                            }
-                            ThreadEvent::ContextCompaction(compaction) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.push_context_compaction(compaction, cx);
-                                })?;
-                            }
-                            ThreadEvent::ContextCompactionUpdate(update) => {
-                                let Some(acp_thread) = acp_thread.as_ref() else {
-                                    continue;
-                                };
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.update_context_compaction(update, cx);
-                                })?;
-                            }
-                            ThreadEvent::Stop(stop_reason) => {
-                                log::debug!("Assistant message complete: {:?}", stop_reason);
-                                return Ok(acp::PromptResponse::new(stop_reason));
-                            }
+                        if let Some(response) = Self::apply_thread_event_to_acp_thread(
+                            event,
+                            acp_thread.as_ref(),
+                            connection.as_ref(),
+                            authorization_mode,
+                            cx,
+                        )? {
+                            return Ok(response);
                         }
                     }
                     Err(e) => {
@@ -2395,12 +2261,173 @@ impl NativeAgentConnection {
             anyhow::Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
         })
     }
+
+    pub(crate) fn apply_remote_thread_event(
+        event: ThreadEvent,
+        acp_thread: &WeakEntity<AcpThread>,
+        cx: &mut AsyncApp,
+    ) -> Result<Option<acp::PromptResponse>> {
+        Self::apply_thread_event_to_acp_thread(
+            event,
+            Some(acp_thread),
+            None,
+            ThreadEventAuthorizationMode::Unsupported,
+            cx,
+        )
+    }
+
+    fn apply_thread_event_to_acp_thread(
+        event: ThreadEvent,
+        acp_thread: Option<&WeakEntity<AcpThread>>,
+        connection: Option<&NativeAgentConnection>,
+        authorization_mode: ThreadEventAuthorizationMode,
+        cx: &mut AsyncApp,
+    ) -> Result<Option<acp::PromptResponse>> {
+        match event {
+            ThreadEvent::UserMessage(message) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    for content in &*message.content {
+                        thread.push_user_content_block(
+                            Some(message.id.clone()),
+                            content.clone().into(),
+                            cx,
+                        );
+                    }
+                })?;
+            }
+            ThreadEvent::AgentText(text) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.push_assistant_content_block(text.into(), false, cx)
+                })?;
+            }
+            ThreadEvent::AgentThinking(text) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.push_assistant_content_block(text.into(), true, cx)
+                })?;
+            }
+            ThreadEvent::ToolCallAuthorization(ToolCallAuthorization {
+                tool_call,
+                options,
+                response,
+                context: _,
+                kind,
+            }) => match authorization_mode {
+                ThreadEventAuthorizationMode::RequestFromAcpThread => {
+                    let acp_thread = acp_thread.context("missing AcpThread for authorization")?;
+                    let outcome_task = acp_thread.update(cx, |thread, cx| {
+                        thread.request_tool_call_authorization(tool_call, options, kind, cx)
+                    })??;
+                    cx.background_spawn(async move {
+                        if let acp_thread::RequestPermissionOutcome::Selected(outcome) =
+                            outcome_task.await
+                        {
+                            response
+                                .send(outcome)
+                                .map_err(|_| anyhow!("authorization receiver was dropped"))
+                                .log_err();
+                        }
+                    })
+                    .detach();
+                }
+                ThreadEventAuthorizationMode::AutoDeny => {
+                    let outcome = auto_deny_permission_outcome(&options)?;
+                    response
+                        .send(outcome)
+                        .map_err(|_| anyhow!("authorization receiver was dropped"))
+                        .log_err();
+                }
+                ThreadEventAuthorizationMode::Unsupported => {
+                    return Err(anyhow!(
+                        "server-hosted agent sessions do not support approvals yet"
+                    ));
+                }
+            },
+            ThreadEvent::ToolCallAuthorizationResolved {
+                tool_call_id,
+                outcome,
+            } => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.authorize_tool_call(tool_call_id, outcome, cx);
+                })?;
+            }
+            ThreadEvent::ToolCall(tool_call) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| thread.upsert_tool_call(tool_call, cx))??;
+            }
+            ThreadEvent::ToolCallUpdate(update) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| thread.update_tool_call(update, cx))??;
+            }
+            ThreadEvent::SubagentSpawned(session_id) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.subagent_spawned(session_id, cx);
+                })?;
+            }
+            ThreadEvent::Retry(status) => {
+                if acp_thread::refusal_fallback_model_from_meta(&status.meta).is_some()
+                    && let Some(connection) = connection
+                {
+                    cx.update(|cx| {
+                        connection.0.update(cx, |agent, _| {
+                            agent.models.notify_model_selection_changed();
+                        });
+                    });
+                }
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| thread.update_retry_status(status, cx))?;
+            }
+            ThreadEvent::ContextCompaction(compaction) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.push_context_compaction(compaction, cx);
+                })?;
+            }
+            ThreadEvent::ContextCompactionUpdate(update) => {
+                let Some(acp_thread) = acp_thread else {
+                    return Ok(None);
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.update_context_compaction(update, cx);
+                })?;
+            }
+            ThreadEvent::Stop(stop_reason) => {
+                log::debug!("Assistant message complete: {:?}", stop_reason);
+                return Ok(Some(acp::PromptResponse::new(stop_reason)));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Copy)]
 enum ThreadEventAuthorizationMode {
     RequestFromAcpThread,
     AutoDeny,
+    Unsupported,
 }
 
 fn auto_deny_permission_outcome(

@@ -227,6 +227,7 @@ pub struct AgentSettings {
     pub play_sound_when_agent_done: PlaySoundWhenAgentDone,
     pub single_file_review: bool,
     pub isolate_new_threads: bool,
+    pub host_threads_on_remote: bool,
     pub model_parameters: Vec<LanguageModelParameters>,
     pub auto_compact: AutoCompactSettings,
     pub enable_feedback: bool,
@@ -763,6 +764,7 @@ impl Settings for AgentSettings {
             play_sound_when_agent_done: agent.play_sound_when_agent_done.unwrap_or_default(),
             single_file_review: agent.single_file_review.unwrap(),
             isolate_new_threads: agent.isolate_new_threads.unwrap(),
+            host_threads_on_remote: agent.host_threads_on_remote.unwrap(),
             model_parameters: agent.model_parameters,
             auto_compact: {
                 let auto_compact = agent.auto_compact.unwrap();

@@ -121,6 +121,7 @@ fn migrate_thread_metadata(cx: &mut App) -> Task<anyhow::Result<()>> {
                         worktree_paths: WorktreePaths::from_folder_paths(&entry.folder_paths),
                         remote_connection: None,
                         archived: true,
+                        server_hosted: false,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1727,6 +1728,12 @@ impl ThreadMetadataStore {
             .unwrap_or(Some(updated_at));
 
         let agent_id = thread_ref.connection().agent_id();
+        let server_hosted = existing_thread.as_ref().is_some_and(|t| t.server_hosted)
+            || thread_ref
+                .connection()
+                .clone()
+                .downcast::<agent::RemoteAgentConnection>()
+                .is_some();
 
         // Preserve project-dependent fields for archived threads.
         // The worktree may already have been removed from the
@@ -1789,6 +1796,7 @@ impl ThreadMetadataStore {
             worktree_paths,
             remote_connection,
             archived,
+            server_hosted,
         };
 
         self.save(metadata, cx);
@@ -1907,6 +1915,9 @@ impl Domain for ThreadMetadataDb {
         sql!(
             ALTER TABLE sidebar_threads ADD COLUMN landed TEXT;
         ),
+        sql!(
+            ALTER TABLE sidebar_threads ADD COLUMN server_hosted INTEGER DEFAULT 0;
+        ),
     ];
 }
 
@@ -1926,7 +1937,8 @@ impl ThreadMetadataDb {
 
     const LIST_QUERY: &str = "SELECT thread_id, session_id, agent_id, title, updated_at, \
         created_at, interacted_at, folder_paths, folder_paths_order, archived, main_worktree_paths, \
-        main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group, landed \
+        main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group, \
+        landed, server_hosted \
         FROM sidebar_threads \
         ORDER BY updated_at DESC";
 
@@ -1984,10 +1996,11 @@ impl ThreadMetadataDb {
         let landed = row.landed.map(|landed| landed.as_db_value().to_string());
         let thread_id = *row.thread_id.as_uuid();
         let archived = row.archived;
+        let server_hosted = row.server_hosted;
 
         self.write(move |conn| {
-            let sql = "INSERT INTO sidebar_threads(thread_id, session_id, agent_id, title, updated_at, created_at, interacted_at, folder_paths, folder_paths_order, archived, main_worktree_paths, main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group, landed) \
-                       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
+            let sql = "INSERT INTO sidebar_threads(thread_id, session_id, agent_id, title, updated_at, created_at, interacted_at, folder_paths, folder_paths_order, archived, main_worktree_paths, main_worktree_paths_order, remote_connection, title_override, parallel_attempt_group, landed, server_hosted) \
+                       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
                        ON CONFLICT(thread_id) DO UPDATE SET \
                            session_id = excluded.session_id, \
                            agent_id = excluded.agent_id, \
@@ -2003,7 +2016,8 @@ impl ThreadMetadataDb {
                            remote_connection = excluded.remote_connection, \
                            title_override = excluded.title_override, \
                            parallel_attempt_group = excluded.parallel_attempt_group, \
-                           landed = excluded.landed";
+                           landed = excluded.landed, \
+                           server_hosted = excluded.server_hosted";
             let mut stmt = Statement::prepare(conn, sql)?;
             let mut i = stmt.bind(&thread_id, 1)?;
             i = stmt.bind(&session_id, i)?;
@@ -2020,7 +2034,8 @@ impl ThreadMetadataDb {
             i = stmt.bind(&remote_connection, i)?;
             i = stmt.bind(&title_override, i)?;
             i = stmt.bind(&parallel_attempt_group, i)?;
-            stmt.bind(&landed, i)?;
+            i = stmt.bind(&landed, i)?;
+            stmt.bind(&server_hosted, i)?;
             stmt.exec()
         })
         .await
@@ -2186,6 +2201,7 @@ impl Column for DbThreadMetadataRow {
         let (parallel_attempt_group, next): (Option<String>, i32) =
             Column::column(statement, next)?;
         let (landed, next): (Option<String>, i32) = Column::column(statement, next)?;
+        let (server_hosted, next): (bool, i32) = Column::column(statement, next)?;
 
         let agent_id = agent_id
             .map(|id| AgentId::new(id))
@@ -2256,6 +2272,7 @@ impl Column for DbThreadMetadataRow {
                 worktree_paths,
                 remote_connection,
                 archived,
+                server_hosted,
             }),
             next,
         ))
@@ -2348,6 +2365,7 @@ mod tests {
             interacted_at: None,
             worktree_paths: WorktreePaths::from_folder_paths(&folder_paths),
             remote_connection: None,
+            server_hosted: false,
         }
     }
 
@@ -2921,6 +2939,7 @@ mod tests {
             worktree_paths: WorktreePaths::from_folder_paths(&second_paths),
             remote_connection: None,
             archived: false,
+            server_hosted: false,
         };
 
         cx.update(|cx| {
@@ -3008,6 +3027,7 @@ mod tests {
             worktree_paths: WorktreePaths::from_folder_paths(&project_a_paths),
             remote_connection: None,
             archived: false,
+            server_hosted: false,
         };
 
         cx.update(|cx| {
@@ -3136,6 +3156,7 @@ mod tests {
             worktree_paths: WorktreePaths::from_folder_paths(&project_paths),
             remote_connection: None,
             archived: false,
+            server_hosted: false,
         };
 
         cx.update(|cx| {
@@ -3894,6 +3915,7 @@ mod tests {
             interacted_at: None,
             worktree_paths: linked_worktree_paths.clone(),
             remote_connection: None,
+            server_hosted: false,
         };
 
         let remote_linked_thread = ThreadMetadata {
@@ -3910,6 +3932,7 @@ mod tests {
             interacted_at: None,
             worktree_paths: linked_worktree_paths,
             remote_connection: Some(remote_a.clone()),
+            server_hosted: false,
         };
 
         cx.update(|cx| {

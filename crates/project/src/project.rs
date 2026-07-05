@@ -132,7 +132,7 @@ use std::{
     path::{Path, PathBuf},
     pin::pin,
     str::{self, FromStr},
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -389,6 +389,7 @@ pub enum Event {
     DisconnectedFromRemote {
         server_not_running: bool,
     },
+    AgentSessionEvent(proto::AgentSessionEvent),
     Closed,
     DeletedEntry(WorktreeId, ProjectEntryId),
     CollaboratorUpdated {
@@ -418,6 +419,30 @@ pub enum Event {
     BufferEdited {
         source: BufferEditSource,
     },
+}
+
+static AGENT_SESSION_EVENT_SUBSCRIBERS: LazyLock<
+    Mutex<HashMap<String, Vec<async_channel::Sender<proto::AgentSessionEvent>>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::default()));
+
+pub fn subscribe_agent_session_events(
+    session_id: &str,
+) -> async_channel::Receiver<proto::AgentSessionEvent> {
+    let (tx, rx) = async_channel::unbounded();
+    AGENT_SESSION_EVENT_SUBSCRIBERS
+        .lock()
+        .entry(session_id.to_string())
+        .or_default()
+        .push(tx);
+    rx
+}
+
+fn publish_agent_session_event(event: proto::AgentSessionEvent) {
+    let mut subscribers = AGENT_SESSION_EVENT_SUBSCRIBERS.lock();
+    let Some(session_subscribers) = subscribers.get_mut(&event.session_id) else {
+        return;
+    };
+    session_subscribers.retain(|subscriber| subscriber.try_send(event.clone()).is_ok());
 }
 
 pub struct AgentLocationChanged;
@@ -1651,6 +1676,7 @@ impl Project {
             remote_proto.add_entity_request_handler(Self::handle_find_search_candidates_chunk);
             remote_proto
                 .add_message_handler(cx.weak_entity(), Self::handle_agent_credentials_updated);
+            remote_proto.add_message_handler(cx.weak_entity(), Self::handle_agent_session_event);
 
             remote_proto.add_entity_message_handler(Self::handle_find_search_candidates_cancel);
             BufferStore::init(&remote_proto);
@@ -5326,6 +5352,18 @@ impl Project {
             "remote server rotated agent credentials for {:?}; client keychain update deferred",
             envelope.payload.email
         );
+        Ok(())
+    }
+
+    async fn handle_agent_session_event(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::AgentSessionEvent>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        publish_agent_session_event(envelope.payload.clone());
+        this.update(&mut cx, |_this, cx| {
+            cx.emit(Event::AgentSessionEvent(envelope.payload));
+        });
         Ok(())
     }
 

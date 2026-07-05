@@ -43,6 +43,8 @@ struct PersistedThreadMetadata {
     main_worktree_paths: SerializedPathList,
     remote_connection_json: Option<String>,
     archived: bool,
+    #[serde(default)]
+    server_hosted: bool,
 }
 
 impl ThreadRegistry {
@@ -269,6 +271,7 @@ impl TryFrom<PersistedThreadMetadata> for ThreadMetadata {
             }),
             remote_connection_json: value.remote_connection_json,
             archived: value.archived,
+            server_hosted: value.server_hosted,
         })
     }
 }
@@ -311,6 +314,7 @@ impl TryFrom<ThreadMetadata> for PersistedThreadMetadata {
                 }),
             remote_connection_json: proto.remote_connection_json,
             archived: proto.archived,
+            server_hosted: proto.server_hosted,
         })
     }
 }
