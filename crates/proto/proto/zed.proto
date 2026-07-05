@@ -501,8 +501,6 @@ message Envelope {
     RemoveAgentThread remove_agent_thread = 466;
     AgentThreadUpdated agent_thread_updated = 467;
     AgentThreadRemoved agent_thread_removed = 468;
-    UpdateAgentCredentials update_agent_credentials = 469;
-    AgentCredentialsUpdated agent_credentials_updated = 470;
     CreateAgentSession create_agent_session = 471;
     CreateAgentSessionResponse create_agent_session_response = 472;
     AgentSessionPrompt agent_session_prompt = 473;
@@ -510,7 +508,14 @@ message Envelope {
     SubscribeAgentSession subscribe_agent_session = 475;
     SubscribeAgentSessionResponse subscribe_agent_session_response = 476;
     AgentSessionEvent agent_session_event = 477;
-    RespondAgentToolAuthorization respond_agent_tool_authorization = 478; // current max
+    RespondAgentToolAuthorization respond_agent_tool_authorization = 478;
+    BeginAgentSignIn begin_agent_sign_in = 479;
+    BeginAgentSignInResponse begin_agent_sign_in_response = 480;
+    CompleteAgentSignIn complete_agent_sign_in = 481;
+    CompleteAgentSignInResponse complete_agent_sign_in_response = 482;
+    AgentSignOut agent_sign_out = 483;
+    GetAgentAuthStatus get_agent_auth_status = 484;
+    AgentAuthStatus agent_auth_status = 485; // current max
   }
 
   reserved 87 to 88;
@@ -538,6 +543,7 @@ message Envelope {
   reserved 429 to 430;
   reserved 211 to 216, 232 to 233;
   reserved 397 to 398;
+  reserved 469 to 470;
 }
 
 message Hello {

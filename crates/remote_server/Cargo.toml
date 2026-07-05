@@ -58,6 +58,7 @@ log.workspace = true
 lsp.workspace = true
 net.workspace = true
 node_runtime.workspace = true
+oauth_callback_server.workspace = true
 paths.workspace = true
 project.workspace = true
 proto.workspace = true

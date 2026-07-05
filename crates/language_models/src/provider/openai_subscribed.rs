@@ -1,11 +1,9 @@
 use anyhow::{Context as _, Result, anyhow};
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use credentials_provider::CredentialsProvider;
 use futures::{FutureExt, StreamExt, future::BoxFuture, future::Shared};
 use gpui::{AnyView, App, AsyncApp, Context, Entity, SharedString, Task, Window};
 use http_client::{
-    AsyncBody, CustomHeaders, HttpClient, Method, Request as HttpRequest,
+    CustomHeaders, HttpClient,
     http::{HeaderName, HeaderValue},
 };
 use language_model::{
@@ -15,44 +13,23 @@ use language_model::{
     LanguageModelProviderName, LanguageModelProviderState, LanguageModelRequest,
     LanguageModelToolChoice, RateLimiter,
 };
+use oauth_callback_server::{CodexCredentials, CodexTokenRefreshError};
 use open_ai::{ReasoningEffort, responses::stream_response};
-use rand::RngCore as _;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use ui::{ConfiguredApiCard, prelude::*};
-use url::form_urlencoded;
 use util::ResultExt as _;
 
 use crate::provider::open_ai::{OpenAiResponseEventMapper, into_open_ai_response};
+
+#[cfg(test)]
+use oauth_callback_server::now_ms;
 
 const PROVIDER_ID: LanguageModelProviderId = LanguageModelProviderId::new("openai-subscribed");
 const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new("Codex");
 
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-
-const CREDENTIALS_KEY: &str = "https://chatgpt.com/backend-api/codex";
+const CREDENTIALS_KEY: &str = oauth_callback_server::CODEX_CREDENTIALS_KEY;
 const TOKEN_REFRESH_BUFFER_MS: u64 = 5 * 60 * 1000;
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct CodexCredentials {
-    access_token: String,
-    refresh_token: String,
-    expires_at_ms: u64,
-    account_id: Option<String>,
-    email: Option<String>,
-}
-
-impl CodexCredentials {
-    fn is_expired(&self) -> bool {
-        let now = now_ms();
-        now + TOKEN_REFRESH_BUFFER_MS >= self.expires_at_ms
-    }
-}
 
 pub struct State {
     credentials: Option<CodexCredentials>,
@@ -62,21 +39,6 @@ pub struct State {
     credentials_provider: Arc<dyn CredentialsProvider>,
     auth_generation: u64,
     last_auth_error: Option<SharedString>,
-}
-
-#[derive(Debug)]
-enum RefreshError {
-    Fatal(anyhow::Error),
-    Transient(anyhow::Error),
-}
-
-impl std::fmt::Display for RefreshError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RefreshError::Fatal(e) => write!(f, "{e}"),
-            RefreshError::Transient(e) => write!(f, "{e}"),
-        }
-    }
 }
 
 impl State {
@@ -151,6 +113,10 @@ impl OpenAiSubscribedProvider {
         self.state.update(cx, |s, _| {
             s.load_task = Some(load_task);
         });
+    }
+
+    pub fn reload_credentials(&self, cx: &mut App) {
+        self.load_credentials(cx);
     }
 
     fn sign_out(&self, cx: &mut App) -> Task<Result<()>> {
@@ -571,7 +537,7 @@ async fn get_fresh_credentials(
         provider: PROVIDER_NAME,
     })?;
 
-    if !creds.is_expired() {
+    if !creds.expires_within(TOKEN_REFRESH_BUFFER_MS) {
         return Ok(creds);
     }
 
@@ -594,7 +560,11 @@ async fn get_fresh_credentials(
 
     let shared_task = cx
         .spawn(async move |cx| {
-            let result = refresh_token(&http_client_clone, &refresh_token_value).await;
+            let result = oauth_callback_server::refresh_codex_token(
+                &http_client_clone,
+                &refresh_token_value,
+            )
+            .await;
 
             match result {
                 Ok(refreshed) => {
@@ -641,7 +611,7 @@ async fn get_fresh_credentials(
 
                     persist_result
                 }
-                Err(RefreshError::Fatal(e)) => {
+                Err(CodexTokenRefreshError::Fatal(e)) => {
                     log::error!("ChatGPT subscription token refresh failed fatally: {e:?}");
                     let _ = state_clone.update(cx, |s, cx| {
                         s.refresh_task = None;
@@ -661,7 +631,7 @@ async fn get_fresh_credentials(
                     }
                     Err(Arc::new(e))
                 }
-                Err(RefreshError::Transient(e)) => {
+                Err(CodexTokenRefreshError::Transient(e)) => {
                     log::warn!("ChatGPT subscription token refresh failed transiently: {e:?}");
                     let _ = state_clone.update(cx, |s, _| {
                         s.refresh_task = None;
@@ -684,263 +654,37 @@ async fn get_fresh_credentials(
         .map_err(|e| LanguageModelCompletionError::Other(anyhow::anyhow!("{e}")))
 }
 
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: String,
-    #[serde(default)]
-    id_token: Option<String>,
-    expires_in: u64,
-    #[serde(default)]
-    email: Option<String>,
-}
-
-// The OAuth client registered for `CLIENT_ID` (the Codex CLI's client) only allows
-// `http://localhost:1455/auth/callback` and `http://localhost:1457/auth/callback`
-// as redirect URIs; using anything else (different host, port, or path) causes
-// auth.openai.com to reject the authorize request with a generic `unknown_error`
-// before redirecting back. Keep these in sync with the Codex CLI's redirect URI
-// allow-list (see codex-rs/login/src/server.rs in openai/codex).
-const CODEX_CALLBACK_HOST: &str = "localhost";
-const CODEX_CALLBACK_PORT: u16 = 1455;
-const CODEX_CALLBACK_FALLBACK_PORT: u16 = 1457;
-const CODEX_CALLBACK_PATH: &str = "/auth/callback";
-
 async fn do_oauth_flow(
     http_client: Arc<dyn HttpClient>,
     cx: &AsyncApp,
 ) -> Result<CodexCredentials> {
-    // Start the callback server FIRST so the redirect URI is ready
     let (redirect_uri, callback_rx) =
         oauth_callback_server::start_oauth_callback_server_with_config(
-            oauth_callback_server::OAuthCallbackServerConfig {
-                host: CODEX_CALLBACK_HOST,
-                preferred_port: CODEX_CALLBACK_PORT,
-                fallback_port: Some(CODEX_CALLBACK_FALLBACK_PORT),
-                path: CODEX_CALLBACK_PATH,
-            },
+            oauth_callback_server::codex_callback_server_config(),
         )
         .context("Failed to start OAuth callback server")?;
+    let oauth_flow = oauth_callback_server::build_codex_oauth_flow(&redirect_uri)
+        .context("build ChatGPT subscription authorize URL")?;
 
-    // PKCE verifier: 32 random bytes → base64url (no padding)
-    let mut verifier_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut verifier_bytes);
-    let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+    cx.update(|cx| cx.open_url(&oauth_flow.authorize_url));
 
-    // PKCE challenge: SHA-256(verifier) → base64url
-    let mut hasher = Sha256::new();
-    hasher.update(verifier.as_bytes());
-    let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize().as_slice());
-
-    // CSRF state: 16 random bytes → hex string
-    let mut state_bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut state_bytes);
-    let oauth_state: String = state_bytes.iter().map(|b| format!("{b:02x}")).collect();
-
-    let mut auth_url = url::Url::parse(OPENAI_AUTHORIZE_URL).expect("valid base URL");
-    auth_url
-        .query_pairs_mut()
-        .append_pair("client_id", CLIENT_ID)
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair(
-            "scope",
-            "openid profile email offline_access api.connectors.read api.connectors.invoke",
-        )
-        .append_pair("response_type", "code")
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("id_token_add_organizations", "true")
-        .append_pair("state", &oauth_state)
-        .append_pair("codex_cli_simplified_flow", "true")
-        .append_pair("originator", "zed");
-
-    // Open browser AFTER the listener is ready
-    cx.update(|cx| cx.open_url(auth_url.as_str()));
-
-    // Await the callback
     let callback = callback_rx
         .await
         .map_err(|_| anyhow!("OAuth callback was cancelled"))?
         .context("OAuth callback failed")?;
 
-    // Validate CSRF state
-    if callback.state != oauth_state {
+    if callback.state != oauth_flow.state {
         return Err(anyhow!("OAuth state mismatch"));
     }
 
-    let tokens = exchange_code(&http_client, &callback.code, &verifier, &redirect_uri)
-        .await
-        .context("Token exchange failed")?;
-
-    let jwt = tokens
-        .id_token
-        .as_deref()
-        .unwrap_or(tokens.access_token.as_str());
-    let claims = extract_jwt_claims(jwt);
-
-    Ok(CodexCredentials {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at_ms: now_ms() + tokens.expires_in * 1000,
-        account_id: claims.account_id,
-        email: claims.email.or(tokens.email),
-    })
-}
-
-async fn exchange_code(
-    client: &Arc<dyn HttpClient>,
-    code: &str,
-    verifier: &str,
-    redirect_uri: &str,
-) -> Result<TokenResponse> {
-    let body = form_urlencoded::Serializer::new(String::new())
-        .append_pair("grant_type", "authorization_code")
-        .append_pair("client_id", CLIENT_ID)
-        .append_pair("code", code)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("code_verifier", verifier)
-        .finish();
-
-    let request = HttpRequest::builder()
-        .method(Method::POST)
-        .uri(OPENAI_TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(AsyncBody::from(body))?;
-
-    let mut response = client.send(request).await?;
-    let mut body = String::new();
-    smol::io::AsyncReadExt::read_to_string(response.body_mut(), &mut body).await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Token exchange failed (HTTP {}): {body}",
-            response.status()
-        ));
-    }
-
-    serde_json::from_str::<TokenResponse>(&body).context("Failed to parse token response")
-}
-
-async fn refresh_token(
-    client: &Arc<dyn HttpClient>,
-    refresh_token: &str,
-) -> Result<CodexCredentials, RefreshError> {
-    let body = form_urlencoded::Serializer::new(String::new())
-        .append_pair("grant_type", "refresh_token")
-        .append_pair("client_id", CLIENT_ID)
-        .append_pair("refresh_token", refresh_token)
-        .finish();
-
-    let request = HttpRequest::builder()
-        .method(Method::POST)
-        .uri(OPENAI_TOKEN_URL)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(AsyncBody::from(body))
-        .map_err(|e| RefreshError::Transient(e.into()))?;
-
-    let mut response = client
-        .send(request)
-        .await
-        .map_err(|e| RefreshError::Transient(e))?;
-    let status = response.status();
-    let mut body = String::new();
-    smol::io::AsyncReadExt::read_to_string(response.body_mut(), &mut body)
-        .await
-        .map_err(|e| RefreshError::Transient(e.into()))?;
-
-    if !status.is_success() {
-        let err = anyhow!("Token refresh failed (HTTP {}): {body}", status);
-        // 400/401/403 indicate a revoked or invalid refresh token.
-        // 5xx and other errors are treated as transient.
-        if status == http_client::StatusCode::BAD_REQUEST
-            || status == http_client::StatusCode::UNAUTHORIZED
-            || status == http_client::StatusCode::FORBIDDEN
-        {
-            return Err(RefreshError::Fatal(err));
-        }
-        return Err(RefreshError::Transient(err));
-    }
-
-    let tokens: TokenResponse =
-        serde_json::from_str(&body).map_err(|e| RefreshError::Transient(e.into()))?;
-    let jwt = tokens
-        .id_token
-        .as_deref()
-        .unwrap_or(tokens.access_token.as_str());
-    let claims = extract_jwt_claims(jwt);
-
-    Ok(CodexCredentials {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at_ms: now_ms() + tokens.expires_in * 1000,
-        account_id: claims.account_id,
-        email: claims.email.or(tokens.email),
-    })
-}
-
-struct JwtClaims {
-    account_id: Option<String>,
-    email: Option<String>,
-}
-
-/// Extract claims from a JWT payload (base64url middle segment).
-/// Extracts `chatgpt_account_id` from three possible locations (matching Roo Code's
-/// implementation) and the `email` claim.
-fn extract_jwt_claims(jwt: &str) -> JwtClaims {
-    let Some(payload_b64) = jwt.split('.').nth(1) else {
-        return JwtClaims {
-            account_id: None,
-            email: None,
-        };
-    };
-    let Ok(payload) = URL_SAFE_NO_PAD.decode(payload_b64) else {
-        return JwtClaims {
-            account_id: None,
-            email: None,
-        };
-    };
-    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&payload) else {
-        return JwtClaims {
-            account_id: None,
-            email: None,
-        };
-    };
-
-    let account_id = claims
-        .get("chatgpt_account_id")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            claims
-                .get("https://api.openai.com/auth")
-                .and_then(|v| v.get("chatgpt_account_id"))
-                .and_then(|v| v.as_str())
-        })
-        .or_else(|| {
-            claims
-                .get("organizations")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|org| org.get("id"))
-                .and_then(|v| v.as_str())
-        })
-        .map(|s| s.to_owned());
-
-    let email = claims
-        .get("email")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_owned());
-
-    JwtClaims { account_id, email }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_else(|err| {
-            log::error!("System clock is before UNIX epoch: {err}");
-            0
-        })
+    oauth_callback_server::exchange_codex_code(
+        &http_client,
+        &callback.code,
+        &oauth_flow.verifier,
+        &redirect_uri,
+    )
+    .await
+    .context("Token exchange failed")
 }
 
 fn do_sign_in(state: &Entity<State>, http_client: &Arc<dyn HttpClient>, cx: &mut App) {

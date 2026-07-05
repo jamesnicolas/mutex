@@ -138,20 +138,33 @@ message AgentThreadRemoved {
   string thread_id = 2;
 }
 
-message UpdateAgentCredentials {
-  string access_token = 1;
-  string refresh_token = 2;
-  optional uint64 expires_at_ms = 3;
-  optional string account_id = 4;
-  optional string email = 5;
+message BeginAgentSignIn {
 }
 
-message AgentCredentialsUpdated {
-  string access_token = 1;
-  string refresh_token = 2;
-  optional uint64 expires_at_ms = 3;
-  optional string account_id = 4;
-  optional string email = 5;
+message BeginAgentSignInResponse {
+  string authorize_url = 1;
+  string state = 2;
+}
+
+message CompleteAgentSignIn {
+  string code = 1;
+  string state = 2;
+}
+
+message CompleteAgentSignInResponse {
+  optional string email = 1;
+  optional string account_id = 2;
+}
+
+message AgentSignOut {
+}
+
+message GetAgentAuthStatus {
+}
+
+message AgentAuthStatus {
+  bool authenticated = 1;
+  optional string email = 2;
 }
 
 message CreateAgentSession {

@@ -17,10 +17,20 @@ use std::{any::Any, cell::RefCell, rc::Rc};
 use util::{ResultExt as _, path_list::PathList};
 use watch::Receiver;
 
+const CHATGPT_SUBSCRIPTION_AUTH_METHOD_ID: &str = "chatgpt-subscription";
+
 #[derive(Clone)]
 pub struct RemoteAgentConnection {
     proto_client: AnyProtoClient,
+    auth_methods: Vec<acp::AuthMethod>,
+    auth_state: Rc<RefCell<RemoteAgentAuthState>>,
     sessions: Rc<RefCell<HashMap<acp::SessionId, RemoteSession>>>,
+}
+
+#[derive(Default)]
+struct RemoteAgentAuthState {
+    authenticated: bool,
+    email: Option<String>,
 }
 
 struct RemoteSession {
@@ -36,8 +46,108 @@ impl RemoteAgentConnection {
     pub fn new(proto_client: AnyProtoClient) -> Self {
         Self {
             proto_client,
+            auth_methods: vec![acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
+                CHATGPT_SUBSCRIPTION_AUTH_METHOD_ID,
+                "Sign in with ChatGPT",
+            ))],
+            auth_state: Rc::new(RefCell::new(RemoteAgentAuthState::default())),
             sessions: Rc::new(RefCell::new(HashMap::default())),
         }
+    }
+
+    pub fn refresh_auth_status(&self, cx: &App) {
+        let proto_client = self.proto_client.clone();
+        let auth_state = self.auth_state.clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                match proto_client.request(proto::GetAgentAuthStatus {}).await {
+                    Ok(status) => {
+                        Self::set_auth_status(&auth_state, status);
+                    }
+                    Err(error) => {
+                        auth_state.borrow_mut().authenticated = false;
+                        log::warn!("failed to query remote agent auth status: {error:?}");
+                    }
+                }
+            })
+            .detach();
+    }
+
+    fn set_auth_status(
+        auth_state: &Rc<RefCell<RemoteAgentAuthState>>,
+        status: proto::AgentAuthStatus,
+    ) {
+        *auth_state.borrow_mut() = RemoteAgentAuthState {
+            authenticated: status.authenticated,
+            email: status.email,
+        };
+    }
+
+    async fn ensure_authenticated(
+        proto_client: &AnyProtoClient,
+        auth_state: &Rc<RefCell<RemoteAgentAuthState>>,
+    ) -> Result<()> {
+        let status = proto_client
+            .request(proto::GetAgentAuthStatus {})
+            .await
+            .context("query remote agent auth status")?;
+        let authenticated = status.authenticated;
+        Self::set_auth_status(auth_state, status);
+        if !authenticated {
+            return Err(acp_thread::AuthRequired::new()
+                .with_description("Sign in with ChatGPT to continue.".to_string())
+                .into());
+        }
+        Ok(())
+    }
+
+    async fn complete_authentication_from_callback(
+        proto_client: AnyProtoClient,
+        auth_state: Rc<RefCell<RemoteAgentAuthState>>,
+        begin: proto::BeginAgentSignInResponse,
+        callback: oauth_callback_server::OAuthCallbackParams,
+    ) -> Result<()> {
+        if callback.state != begin.state {
+            auth_state.borrow_mut().authenticated = false;
+            return Err(anyhow!("OAuth state mismatch"));
+        }
+
+        let complete = proto_client
+            .request(proto::CompleteAgentSignIn {
+                code: callback.code,
+                state: callback.state,
+            })
+            .await
+            .context("complete remote agent sign-in")?;
+        *auth_state.borrow_mut() = RemoteAgentAuthState {
+            authenticated: true,
+            email: complete.email,
+        };
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn authenticate_with_callback_for_test(
+        &self,
+        method: acp::AuthMethodId,
+        callback: oauth_callback_server::OAuthCallbackParams,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let proto_client = self.proto_client.clone();
+        let auth_state = self.auth_state.clone();
+        cx.spawn(async move |cx| {
+            if method != acp::AuthMethodId::new(CHATGPT_SUBSCRIPTION_AUTH_METHOD_ID) {
+                return Err(anyhow!("unsupported remote agent auth method {method}"));
+            }
+
+            let begin = proto_client
+                .request(proto::BeginAgentSignIn {})
+                .await
+                .context("begin remote agent sign-in")?;
+            cx.update(|cx| cx.open_url(&begin.authorize_url));
+            Self::complete_authentication_from_callback(proto_client, auth_state, begin, callback)
+                .await
+        })
     }
 
     fn make_thread(
@@ -402,6 +512,7 @@ impl AgentConnection for RemoteAgentConnection {
             server_hosted: true,
         };
         cx.spawn(async move |cx| {
+            Self::ensure_authenticated(&proto_client, &self.auth_state).await?;
             let response = proto_client
                 .request(proto::CreateAgentSession {
                     thread_metadata: Some(metadata.to_proto()?),
@@ -442,7 +553,9 @@ impl AgentConnection for RemoteAgentConnection {
         cx: &mut App,
     ) -> Task<Result<Entity<AcpThread>>> {
         let live_rx = project_crate::subscribe_agent_session_events(session_id.0.as_ref());
+        let proto_client = self.proto_client.clone();
         cx.spawn(async move |cx| {
+            Self::ensure_authenticated(&proto_client, &self.auth_state).await?;
             let acp_thread =
                 cx.update(|cx| self.make_thread(session_id.clone(), project, work_dirs, title, cx));
             let live_task = cx.update(|cx| self.spawn_live_task(session_id.clone(), live_rx, cx));
@@ -464,11 +577,71 @@ impl AgentConnection for RemoteAgentConnection {
     }
 
     fn auth_methods(&self) -> &[acp::AuthMethod] {
-        &[]
+        let auth_state = self.auth_state.borrow();
+        let _authenticated_email = auth_state.email.as_deref();
+        if auth_state.authenticated {
+            &[]
+        } else {
+            &self.auth_methods
+        }
     }
 
-    fn authenticate(&self, _method: acp::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
-        Task::ready(Ok(()))
+    fn authenticate(&self, method: acp::AuthMethodId, cx: &mut App) -> Task<Result<()>> {
+        let proto_client = self.proto_client.clone();
+        let auth_state = self.auth_state.clone();
+        cx.spawn(async move |cx| {
+            if method != acp::AuthMethodId::new(CHATGPT_SUBSCRIPTION_AUTH_METHOD_ID) {
+                return Err(anyhow!("unsupported remote agent auth method {method}"));
+            }
+
+            let begin = proto_client
+                .request(proto::BeginAgentSignIn {})
+                .await
+                .context("begin remote agent sign-in")?;
+
+            let (redirect_uri, callback_rx) =
+                oauth_callback_server::start_oauth_callback_server_with_config(
+                    oauth_callback_server::OAuthCallbackServerConfig {
+                        host: oauth_callback_server::CODEX_CALLBACK_HOST,
+                        preferred_port: oauth_callback_server::CODEX_CALLBACK_PORT,
+                        fallback_port: None,
+                        path: oauth_callback_server::CODEX_CALLBACK_PATH,
+                    },
+                )
+                .context("start remote agent OAuth callback server")?;
+            if redirect_uri != oauth_callback_server::CODEX_CALLBACK_REDIRECT_URI {
+                return Err(anyhow!(
+                    "unexpected remote agent OAuth redirect URI {redirect_uri}"
+                ));
+            }
+
+            cx.update(|cx| cx.open_url(&begin.authorize_url));
+
+            let callback = callback_rx
+                .await
+                .map_err(|_| anyhow!("OAuth callback was cancelled"))?
+                .context("OAuth callback failed")?;
+
+            Self::complete_authentication_from_callback(proto_client, auth_state, begin, callback)
+                .await
+        })
+    }
+
+    fn supports_logout(&self) -> bool {
+        self.auth_state.borrow().authenticated
+    }
+
+    fn logout(&self, cx: &mut App) -> Task<Result<()>> {
+        let proto_client = self.proto_client.clone();
+        let auth_state = self.auth_state.clone();
+        cx.spawn(async move |_| {
+            proto_client
+                .request(proto::AgentSignOut {})
+                .await
+                .context("sign out remote agent")?;
+            *auth_state.borrow_mut() = RemoteAgentAuthState::default();
+            Ok(())
+        })
     }
 
     fn prompt(
@@ -491,7 +664,9 @@ impl AgentConnection for RemoteAgentConnection {
             .get(&session_id)
             .map(|session| session.acp_thread.clone());
         let sessions = self.sessions.clone();
+        let auth_state = self.auth_state.clone();
         cx.spawn(async move |cx| {
+            Self::ensure_authenticated(&proto_client, &auth_state).await?;
             let acp_thread = acp_thread.context("remote agent session not found")?;
             proto_client
                 .request(proto::AgentSessionPrompt {
@@ -558,6 +733,251 @@ fn serializable_event_from_proto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt as _;
+    use gpui::TestAppContext;
+    use proto::EnvelopedMessage as _;
+    use rpc::{ProtoClient, ProtoMessageHandlerSet};
+    use std::sync::Arc;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompleteSignInRequest {
+        code: String,
+        state: String,
+    }
+
+    #[derive(Default)]
+    struct FakeRemoteAgentProtoClient {
+        handler_set: parking_lot::Mutex<ProtoMessageHandlerSet>,
+        state: parking_lot::Mutex<FakeRemoteAgentProtoState>,
+    }
+
+    #[derive(Default)]
+    struct FakeRemoteAgentProtoState {
+        authenticated: bool,
+        request_types: Vec<String>,
+        complete_requests: Vec<CompleteSignInRequest>,
+    }
+
+    impl FakeRemoteAgentProtoClient {
+        fn new(authenticated: bool) -> Arc<Self> {
+            Arc::new(Self {
+                handler_set: parking_lot::Mutex::new(ProtoMessageHandlerSet::default()),
+                state: parking_lot::Mutex::new(FakeRemoteAgentProtoState {
+                    authenticated,
+                    ..Default::default()
+                }),
+            })
+        }
+
+        fn any(self: &Arc<Self>) -> AnyProtoClient {
+            AnyProtoClient::from(self.clone())
+        }
+
+        fn set_authenticated(&self, authenticated: bool) {
+            self.state.lock().authenticated = authenticated;
+        }
+
+        fn request_types(&self) -> Vec<String> {
+            self.state.lock().request_types.clone()
+        }
+
+        fn complete_requests(&self) -> Vec<CompleteSignInRequest> {
+            self.state.lock().complete_requests.clone()
+        }
+    }
+
+    impl ProtoClient for FakeRemoteAgentProtoClient {
+        fn request(
+            &self,
+            envelope: proto::Envelope,
+            request_type: &'static str,
+        ) -> futures::future::BoxFuture<'static, Result<proto::Envelope>> {
+            let result = (|| {
+                let mut state = self.state.lock();
+                state.request_types.push(request_type.to_string());
+
+                match request_type {
+                    <proto::GetAgentAuthStatus as proto::EnvelopedMessage>::NAME => {
+                        Ok(proto::AgentAuthStatus {
+                            authenticated: state.authenticated,
+                            email: state
+                                .authenticated
+                                .then(|| "remote@example.com".to_string()),
+                        }
+                        .into_envelope(0, None, None))
+                    }
+                    <proto::BeginAgentSignIn as proto::EnvelopedMessage>::NAME => {
+                        Ok(proto::BeginAgentSignInResponse {
+                            authorize_url: "https://auth.example.test/authorize?state=test-state"
+                                .to_string(),
+                            state: "test-state".to_string(),
+                        }
+                        .into_envelope(0, None, None))
+                    }
+                    <proto::CompleteAgentSignIn as proto::EnvelopedMessage>::NAME => {
+                        let request = proto::CompleteAgentSignIn::from_envelope(envelope)
+                            .context("decode CompleteAgentSignIn request")?;
+                        state.complete_requests.push(CompleteSignInRequest {
+                            code: request.code,
+                            state: request.state,
+                        });
+                        state.authenticated = true;
+                        Ok(proto::CompleteAgentSignInResponse {
+                            email: Some("remote@example.com".to_string()),
+                            account_id: Some("account-id".to_string()),
+                        }
+                        .into_envelope(0, None, None))
+                    }
+                    <proto::AgentSignOut as proto::EnvelopedMessage>::NAME => {
+                        state.authenticated = false;
+                        Ok(proto::Ack {}.into_envelope(0, None, None))
+                    }
+                    <proto::AgentSessionPrompt as proto::EnvelopedMessage>::NAME => {
+                        Ok(proto::Ack {}.into_envelope(0, None, None))
+                    }
+                    _ => Err(anyhow!("unexpected fake proto request {request_type}")),
+                }
+            })();
+
+            async move { result }.boxed()
+        }
+
+        fn send(&self, _envelope: proto::Envelope, _message_type: &'static str) -> Result<()> {
+            Ok(())
+        }
+
+        fn send_response(
+            &self,
+            _envelope: proto::Envelope,
+            _message_type: &'static str,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn message_handler_set(&self) -> &parking_lot::Mutex<ProtoMessageHandlerSet> {
+            &self.handler_set
+        }
+
+        fn is_via_collab(&self) -> bool {
+            false
+        }
+
+        fn has_wsl_interop(&self) -> bool {
+            false
+        }
+    }
+
+    #[gpui::test]
+    async fn auth_methods_follow_remote_auth_status(cx: &mut TestAppContext) {
+        if let Err(error) = auth_methods_follow_remote_auth_status_impl(cx).await {
+            panic!("{error:?}");
+        }
+    }
+
+    async fn auth_methods_follow_remote_auth_status_impl(cx: &mut TestAppContext) -> Result<()> {
+        let proto_client = FakeRemoteAgentProtoClient::new(false);
+        let connection = RemoteAgentConnection::new(proto_client.any());
+
+        cx.update(|cx| connection.refresh_auth_status(cx));
+        cx.run_until_parked();
+        assert_eq!(connection.auth_methods().len(), 1);
+        assert_eq!(
+            connection.auth_methods()[0].id(),
+            &acp::AuthMethodId::new(CHATGPT_SUBSCRIPTION_AUTH_METHOD_ID)
+        );
+
+        proto_client.set_authenticated(true);
+        cx.update(|cx| connection.refresh_auth_status(cx));
+        cx.run_until_parked();
+        assert!(connection.auth_methods().is_empty());
+
+        Ok(())
+    }
+
+    #[gpui::test]
+    async fn authenticate_drives_begin_callback_complete(cx: &mut TestAppContext) {
+        if let Err(error) = authenticate_drives_begin_callback_complete_impl(cx).await {
+            panic!("{error:?}");
+        }
+    }
+
+    async fn authenticate_drives_begin_callback_complete_impl(
+        cx: &mut TestAppContext,
+    ) -> Result<()> {
+        let proto_client = FakeRemoteAgentProtoClient::new(false);
+        let connection = RemoteAgentConnection::new(proto_client.any());
+
+        let authenticate = cx.update(|cx| {
+            connection.authenticate_with_callback_for_test(
+                acp::AuthMethodId::new(CHATGPT_SUBSCRIPTION_AUTH_METHOD_ID),
+                oauth_callback_server::OAuthCallbackParams {
+                    code: "callback-code".to_string(),
+                    state: "test-state".to_string(),
+                },
+                cx,
+            )
+        });
+        authenticate.await?;
+
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://auth.example.test/authorize?state=test-state")
+        );
+        assert!(connection.auth_methods().is_empty());
+        assert!(connection.supports_logout());
+        assert_eq!(
+            proto_client.complete_requests(),
+            vec![CompleteSignInRequest {
+                code: "callback-code".to_string(),
+                state: "test-state".to_string(),
+            }]
+        );
+        assert_eq!(
+            proto_client.request_types(),
+            vec![
+                <proto::BeginAgentSignIn as proto::EnvelopedMessage>::NAME.to_string(),
+                <proto::CompleteAgentSignIn as proto::EnvelopedMessage>::NAME.to_string(),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[gpui::test]
+    async fn prompt_while_unauthenticated_returns_auth_required(cx: &mut TestAppContext) {
+        if let Err(error) = prompt_while_unauthenticated_returns_auth_required_impl(cx).await {
+            panic!("{error:?}");
+        }
+    }
+
+    async fn prompt_while_unauthenticated_returns_auth_required_impl(
+        cx: &mut TestAppContext,
+    ) -> Result<()> {
+        let proto_client = FakeRemoteAgentProtoClient::new(false);
+        let connection = RemoteAgentConnection::new(proto_client.any());
+        let task = cx.update(|cx| {
+            connection.prompt(
+                UserMessageId::new(),
+                acp::PromptRequest::new(
+                    acp::SessionId::new("session"),
+                    vec![acp::ContentBlock::Text(acp::TextContent::new("hello"))],
+                ),
+                cx,
+            )
+        });
+
+        let error = match task.await {
+            Ok(_) => return Err(anyhow!("prompt unexpectedly succeeded")),
+            Err(error) => error,
+        };
+        assert!(error.downcast_ref::<acp_thread::AuthRequired>().is_some());
+        assert_eq!(
+            proto_client.request_types(),
+            vec![<proto::GetAgentAuthStatus as proto::EnvelopedMessage>::NAME.to_string()]
+        );
+
+        Ok(())
+    }
 
     #[test]
     fn classify_sequence_applies_in_order_and_advances() {

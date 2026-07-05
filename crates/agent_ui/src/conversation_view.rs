@@ -940,7 +940,9 @@ impl ConversationView {
         }
 
         let proto_client = remote_client.read(cx).proto_client();
-        Some(Rc::new(RemoteAgentConnection::new(proto_client)) as Rc<dyn AgentConnection>)
+        let connection = Rc::new(RemoteAgentConnection::new(proto_client));
+        connection.refresh_auth_status(cx);
+        Some(connection as Rc<dyn AgentConnection>)
     }
 
     fn initial_state(

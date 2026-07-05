@@ -15,23 +15,30 @@ use language::LanguageRegistry;
 use language_model::LanguageModelRegistry;
 use language_models::provider::openai_subscribed::OpenAiSubscribedProvider;
 use node_runtime::NodeRuntime;
+use oauth_callback_server::CodexCredentials;
 use project::{LocalProjectFlags, Project, ThreadMetadata, ThreadRegistry};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
-use serde::{Deserialize, Serialize};
 use settings::Settings as _;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
     collections::VecDeque,
     future::Future,
+    io::Write as _,
+    path::PathBuf,
     pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 use util::ResultExt as _;
 
-const OPENAI_CODEX_CREDENTIALS_KEY: &str = "https://chatgpt.com/backend-api/codex";
+const OPENAI_CODEX_CREDENTIALS_KEY: &str = oauth_callback_server::CODEX_CREDENTIALS_KEY;
+const AGENT_CREDENTIALS_USERNAME: &str = "Bearer";
+const AGENT_SIGN_IN_EXPIRATION: Duration = Duration::from_secs(10 * 60);
 const AGENT_EVENT_BUFFER_LIMIT: usize = 1024;
 
 #[derive(Clone, Default)]
@@ -62,92 +69,123 @@ impl Drop for AgentTurnGuard {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct ForwardedAgentCredentials {
-    access_token: String,
-    refresh_token: String,
-    expires_at_ms: u64,
-    account_id: Option<String>,
-    email: Option<String>,
+#[derive(Default)]
+struct AgentCredentialsCache {
+    loaded: bool,
+    bytes: Option<Vec<u8>>,
 }
 
-impl ForwardedAgentCredentials {
-    fn from_proto(message: proto::UpdateAgentCredentials) -> Self {
-        Self {
-            access_token: message.access_token,
-            refresh_token: message.refresh_token,
-            expires_at_ms: message.expires_at_ms.unwrap_or_default(),
-            account_id: message.account_id,
-            email: message.email,
-        }
-    }
-
-    fn to_updated_proto(&self) -> proto::AgentCredentialsUpdated {
-        proto::AgentCredentialsUpdated {
-            access_token: self.access_token.clone(),
-            refresh_token: self.refresh_token.clone(),
-            expires_at_ms: Some(self.expires_at_ms),
-            account_id: self.account_id.clone(),
-            email: self.email.clone(),
-        }
-    }
+struct FileBackedAgentCredentialsProvider {
+    path: PathBuf,
+    cache: Mutex<AgentCredentialsCache>,
 }
 
-#[derive(Clone)]
-struct StoredCredentials {
-    username: String,
-    credentials: ForwardedAgentCredentials,
-    bytes: Vec<u8>,
-}
-
-struct InMemoryAgentCredentialsProvider {
-    session: AnyProtoClient,
-    credentials: Mutex<Option<StoredCredentials>>,
-}
-
-impl InMemoryAgentCredentialsProvider {
-    fn new(session: AnyProtoClient) -> Self {
-        Self {
-            session,
-            credentials: Mutex::new(None),
-        }
-    }
-
-    fn update_from_client(
-        &self,
-        credentials: ForwardedAgentCredentials,
-    ) -> Result<Option<ForwardedAgentCredentials>> {
-        let bytes = serde_json::to_vec(&credentials).context("serialize agent credentials")?;
-        let mut lock = self
-            .credentials
-            .lock()
-            .map_err(|_| anyhow!("agent credentials lock poisoned"))?;
-
-        if let Some(stored) = lock.as_ref()
-            && stored.credentials.refresh_token != credentials.refresh_token
-            && stored.credentials.expires_at_ms >= credentials.expires_at_ms
-        {
-            return Ok(Some(stored.credentials.clone()));
-        }
-
-        *lock = Some(StoredCredentials {
-            username: "Bearer".to_string(),
-            credentials,
-            bytes,
-        });
-        Ok(None)
+impl FileBackedAgentCredentialsProvider {
+    fn new() -> Self {
+        Self::with_path(Self::default_path())
     }
 
     #[cfg(test)]
-    pub fn has_credentials(&self) -> bool {
-        self.credentials
+    fn new_for_path(path: PathBuf) -> Self {
+        Self::with_path(path)
+    }
+
+    fn with_path(path: PathBuf) -> Self {
+        Self {
+            path,
+            cache: Mutex::new(AgentCredentialsCache::default()),
+        }
+    }
+
+    fn default_path() -> PathBuf {
+        paths::remote_server_state_dir()
+            .join("agent_credentials")
+            .join("openai_codex.json")
+    }
+
+    fn read_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let mut cache = self
+            .cache
             .lock()
-            .map(|credentials| credentials.is_some())
-            .unwrap_or(false)
+            .map_err(|_| anyhow!("agent credentials lock poisoned"))?;
+        if !cache.loaded {
+            cache.bytes = match std::fs::read(&self.path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("read agent credentials from {}", self.path.display())
+                    });
+                }
+            };
+            cache.loaded = true;
+        }
+        Ok(cache.bytes.clone())
+    }
+
+    fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+        serde_json::from_slice::<CodexCredentials>(bytes)
+            .context("deserialize agent credentials before persisting")?;
+        write_credentials_file_atomically(&self.path, bytes)?;
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow!("agent credentials lock poisoned"))?;
+        cache.loaded = true;
+        cache.bytes = Some(bytes.to_vec());
+        Ok(())
+    }
+
+    fn delete_file(&self) -> Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("delete agent credentials at {}", self.path.display())
+                });
+            }
+        }
+
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow!("agent credentials lock poisoned"))?;
+        cache.loaded = true;
+        cache.bytes = None;
+        Ok(())
+    }
+
+    fn status(&self) -> Result<proto::AgentAuthStatus> {
+        let Some(bytes) = self.read_bytes()? else {
+            return Ok(proto::AgentAuthStatus {
+                authenticated: false,
+                email: None,
+            });
+        };
+        let credentials = serde_json::from_slice::<CodexCredentials>(&bytes)
+            .context("deserialize stored agent credentials")?;
+        Ok(proto::AgentAuthStatus {
+            authenticated: !credentials.refresh_token.is_empty(),
+            email: credentials.email,
+        })
+    }
+
+    #[cfg(test)]
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    fn credentials_json(&self) -> Option<serde_json::Value> {
+        self.read_bytes()
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
     }
 }
 
-impl CredentialsProvider for InMemoryAgentCredentialsProvider {
+impl CredentialsProvider for FileBackedAgentCredentialsProvider {
     fn read_credentials<'a>(
         &'a self,
         url: &'a str,
@@ -157,14 +195,9 @@ impl CredentialsProvider for InMemoryAgentCredentialsProvider {
             if url != OPENAI_CODEX_CREDENTIALS_KEY {
                 return Ok(None);
             }
-
-            let credentials = self
-                .credentials
-                .lock()
-                .map_err(|_| anyhow!("agent credentials lock poisoned"))?
-                .clone()
-                .map(|credentials| (credentials.username, credentials.bytes));
-            Ok(credentials)
+            Ok(self
+                .read_bytes()?
+                .map(|bytes| (AGENT_CREDENTIALS_USERNAME.to_string(), bytes)))
         })
     }
 
@@ -179,24 +212,12 @@ impl CredentialsProvider for InMemoryAgentCredentialsProvider {
             if url != OPENAI_CODEX_CREDENTIALS_KEY {
                 return Ok(());
             }
-
-            let credentials = serde_json::from_slice::<ForwardedAgentCredentials>(password)
-                .context("deserialize refreshed agent credentials")?;
-            {
-                let mut lock = self
-                    .credentials
-                    .lock()
-                    .map_err(|_| anyhow!("agent credentials lock poisoned"))?;
-                *lock = Some(StoredCredentials {
-                    username: username.to_string(),
-                    credentials: credentials.clone(),
-                    bytes: password.to_vec(),
-                });
+            if username != AGENT_CREDENTIALS_USERNAME {
+                return Err(anyhow!(
+                    "unsupported agent credentials username {username:?}"
+                ));
             }
-
-            self.session
-                .send(credentials.to_updated_proto())
-                .context("send refreshed agent credentials to client")?;
+            self.write_bytes(password)?;
             Ok(())
         })
     }
@@ -207,12 +228,69 @@ impl CredentialsProvider for InMemoryAgentCredentialsProvider {
         _cx: &'a AsyncApp,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            log::warn!(
-                "ignoring server-side request to delete forwarded agent credentials for {url}"
-            );
+            if url != OPENAI_CODEX_CREDENTIALS_KEY {
+                return Ok(());
+            }
+            self.delete_file()?;
             Ok(())
         })
     }
+}
+
+fn write_credentials_file_atomically(path: &PathBuf, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("agent credentials path has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create agent credentials directory {}", parent.display()))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .ok_or_else(|| anyhow!("agent credentials path has no file name"))?;
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&temp_path)
+            .with_context(|| format!("create temp credentials file {}", temp_path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("write temp credentials file {}", temp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync temp credentials file {}", temp_path.display()))?;
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("set permissions on {}", temp_path.display()))?;
+        }
+        std::fs::rename(&temp_path, path).with_context(|| {
+            format!(
+                "rename temp credentials file {} to {}",
+                temp_path.display(),
+                path.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        match std::fs::remove_file(&temp_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                log::warn!(
+                    "failed to remove temp agent credentials file {}: {error}",
+                    temp_path.display()
+                );
+            }
+        }
+    }
+
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -370,16 +448,58 @@ struct HostedAgentSession {
     running_turn: Option<Task<()>>,
 }
 
+struct PendingAgentSignIn {
+    verifier: String,
+    state: String,
+    expires_at: Instant,
+}
+
+fn begin_agent_sign_in(
+    pending_sign_in: &mut Option<PendingAgentSignIn>,
+) -> Result<proto::BeginAgentSignInResponse> {
+    let flow = oauth_callback_server::build_codex_oauth_flow(
+        oauth_callback_server::CODEX_CALLBACK_REDIRECT_URI,
+    )?;
+    *pending_sign_in = Some(PendingAgentSignIn {
+        verifier: flow.verifier,
+        state: flow.state.clone(),
+        expires_at: Instant::now() + AGENT_SIGN_IN_EXPIRATION,
+    });
+    Ok(proto::BeginAgentSignInResponse {
+        authorize_url: flow.authorize_url,
+        state: flow.state,
+    })
+}
+
+fn take_pending_sign_in_verifier(
+    pending_sign_in: &mut Option<PendingAgentSignIn>,
+    state: &str,
+) -> Result<String> {
+    let pending = pending_sign_in
+        .take()
+        .context("no pending agent sign-in flow")?;
+    if Instant::now() > pending.expires_at {
+        return Err(anyhow!("agent sign-in flow expired"));
+    }
+    if pending.state != state {
+        return Err(anyhow!("agent sign-in state mismatch"));
+    }
+    Ok(pending.verifier)
+}
+
 pub struct AgentSessionHost {
     session: AnyProtoClient,
     fs: Arc<dyn Fs>,
+    http_client: Arc<dyn HttpClient>,
     node_runtime: NodeRuntime,
     languages: Arc<LanguageRegistry>,
     client: Arc<Client>,
     user_store: Entity<UserStore>,
     thread_registry: Entity<ThreadRegistry>,
     connection: NativeAgentConnection,
-    credentials_provider: Arc<InMemoryAgentCredentialsProvider>,
+    credentials_provider: Arc<FileBackedAgentCredentialsProvider>,
+    openai_provider: Arc<OpenAiSubscribedProvider>,
+    pending_sign_in: Option<PendingAgentSignIn>,
     project: Option<Entity<Project>>,
     sessions: HashMap<acp::SessionId, HostedAgentSession>,
     subscribed_sessions: Arc<Mutex<HashSet<acp::SessionId>>>,
@@ -389,7 +509,10 @@ pub struct AgentSessionHost {
 
 impl AgentSessionHost {
     pub fn init(session: &AnyProtoClient, host: &Entity<Self>) {
-        session.add_request_handler(host.downgrade(), Self::handle_update_agent_credentials);
+        session.add_request_handler(host.downgrade(), Self::handle_begin_agent_sign_in);
+        session.add_request_handler(host.downgrade(), Self::handle_complete_agent_sign_in);
+        session.add_request_handler(host.downgrade(), Self::handle_agent_sign_out);
+        session.add_request_handler(host.downgrade(), Self::handle_get_agent_auth_status);
         session.add_request_handler(host.downgrade(), Self::handle_create_agent_session);
         session.add_request_handler(host.downgrade(), Self::handle_agent_session_prompt);
         session.add_request_handler(host.downgrade(), Self::handle_agent_session_cancel);
@@ -414,14 +537,14 @@ impl AgentSessionHost {
         agent_settings::AgentSettings::register(cx);
         language_model::init(cx);
 
-        let credentials_provider = Arc::new(InMemoryAgentCredentialsProvider::new(session.clone()));
+        let credentials_provider = Arc::new(FileBackedAgentCredentialsProvider::new());
         let openai_provider = Arc::new(OpenAiSubscribedProvider::new(
-            http_client,
+            http_client.clone(),
             credentials_provider.clone(),
             cx,
         ));
         LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
-            registry.register_provider(openai_provider, cx);
+            registry.register_provider(openai_provider.clone(), cx);
         });
 
         let client = Client::production(cx);
@@ -433,6 +556,7 @@ impl AgentSessionHost {
         Self {
             session,
             fs,
+            http_client,
             node_runtime,
             languages,
             client,
@@ -440,6 +564,8 @@ impl AgentSessionHost {
             thread_registry,
             connection,
             credentials_provider,
+            openai_provider,
+            pending_sign_in: None,
             project: None,
             sessions: HashMap::default(),
             subscribed_sessions: Arc::new(Mutex::new(HashSet::default())),
@@ -707,27 +833,105 @@ impl AgentSessionHost {
     }
 
     #[cfg(test)]
-    pub fn has_forwarded_credentials(&self) -> bool {
-        self.credentials_provider.has_credentials()
+    pub fn agent_credentials_path(&self) -> &std::path::Path {
+        self.credentials_provider.path()
     }
 
-    async fn handle_update_agent_credentials(
+    #[cfg(test)]
+    pub fn agent_credentials_json(&self) -> Option<serde_json::Value> {
+        self.credentials_provider.credentials_json()
+    }
+
+    #[cfg(test)]
+    pub fn set_pending_sign_in_expired(&mut self) {
+        if let Some(pending) = &mut self.pending_sign_in {
+            pending.expires_at = Instant::now() - Duration::from_secs(1);
+        }
+    }
+
+    fn begin_agent_sign_in(&mut self) -> Result<proto::BeginAgentSignInResponse> {
+        begin_agent_sign_in(&mut self.pending_sign_in)
+    }
+
+    fn take_pending_sign_in_verifier(&mut self, state: &str) -> Result<String> {
+        take_pending_sign_in_verifier(&mut self.pending_sign_in, state)
+    }
+
+    async fn handle_begin_agent_sign_in(
         this: Entity<Self>,
-        envelope: TypedEnvelope<proto::UpdateAgentCredentials>,
+        _envelope: TypedEnvelope<proto::BeginAgentSignIn>,
         mut cx: AsyncApp,
-    ) -> Result<proto::Ack> {
-        let credentials = ForwardedAgentCredentials::from_proto(envelope.payload);
-        let credentials_to_push = this.update(&mut cx, |this, _cx| {
-            this.credentials_provider.update_from_client(credentials)
+    ) -> Result<proto::BeginAgentSignInResponse> {
+        this.update(&mut cx, |this, _cx| this.begin_agent_sign_in())
+    }
+
+    async fn handle_complete_agent_sign_in(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::CompleteAgentSignIn>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::CompleteAgentSignInResponse> {
+        let code = envelope.payload.code;
+        let state = envelope.payload.state;
+        let (verifier, http_client, credentials_provider) = this.update(&mut cx, |this, _cx| {
+            let verifier = this.take_pending_sign_in_verifier(&state)?;
+            anyhow::Ok((
+                verifier,
+                this.http_client.clone(),
+                this.credentials_provider.clone(),
+            ))
         })?;
 
-        if let Some(credentials) = credentials_to_push {
-            this.read_with(&cx, |this, _cx| {
-                this.session.send(credentials.to_updated_proto()).log_err();
-            });
-        }
+        let credentials = oauth_callback_server::exchange_codex_code(
+            &http_client,
+            &code,
+            &verifier,
+            oauth_callback_server::CODEX_CALLBACK_REDIRECT_URI,
+        )
+        .await
+        .context("complete agent sign-in token exchange")?;
+        let credentials_json =
+            serde_json::to_vec(&credentials).context("serialize agent credentials")?;
+        credentials_provider
+            .write_credentials(
+                OPENAI_CODEX_CREDENTIALS_KEY,
+                AGENT_CREDENTIALS_USERNAME,
+                &credentials_json,
+                &cx,
+            )
+            .await?;
 
+        this.update(&mut cx, |this, cx| {
+            this.openai_provider.reload_credentials(cx);
+        });
+
+        Ok(proto::CompleteAgentSignInResponse {
+            email: credentials.email,
+            account_id: credentials.account_id,
+        })
+    }
+
+    async fn handle_agent_sign_out(
+        this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::AgentSignOut>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let credentials_provider =
+            this.update(&mut cx, |this, _cx| this.credentials_provider.clone());
+        credentials_provider
+            .delete_credentials(OPENAI_CODEX_CREDENTIALS_KEY, &cx)
+            .await?;
+        this.update(&mut cx, |this, cx| {
+            this.openai_provider.reload_credentials(cx);
+        });
         Ok(proto::Ack {})
+    }
+
+    async fn handle_get_agent_auth_status(
+        this: Entity<Self>,
+        _envelope: TypedEnvelope<proto::GetAgentAuthStatus>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::AgentAuthStatus> {
+        this.update(&mut cx, |this, _cx| this.credentials_provider.status())
     }
 
     async fn handle_create_agent_session(
@@ -922,6 +1126,277 @@ fn serializable_event_to_proto(
 mod tests {
     use super::*;
     use agent::AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT;
+    use gpui::TestAppContext;
+    use http_client::{AsyncBody, FakeHttpClient};
+    use smol::io::AsyncReadExt as _;
+
+    fn test_credentials(
+        access_token: &str,
+        refresh_token: &str,
+        email: Option<&str>,
+    ) -> CodexCredentials {
+        CodexCredentials {
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.to_string(),
+            expires_at_ms: oauth_callback_server::now_ms() + 3_600_000,
+            account_id: Some("account-id".to_string()),
+            email: email.map(ToOwned::to_owned),
+        }
+    }
+
+    #[gpui::test]
+    async fn file_backed_agent_credentials_persist_status_rotation_and_delete(
+        cx: &mut TestAppContext,
+    ) {
+        if let Err(error) =
+            file_backed_agent_credentials_persist_status_rotation_and_delete_impl(cx).await
+        {
+            panic!("{error:?}");
+        }
+    }
+
+    async fn file_backed_agent_credentials_persist_status_rotation_and_delete_impl(
+        cx: &mut TestAppContext,
+    ) -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let provider = Arc::new(FileBackedAgentCredentialsProvider::new_for_path(
+            temp_dir.path().join("agent").join("openai_codex.json"),
+        ));
+        let credentials = serde_json::to_vec(&test_credentials(
+            "access-token",
+            "refresh-token",
+            Some("agent@example.com"),
+        ))?;
+
+        let (username, stored_bytes) = cx
+            .spawn({
+                let provider = provider.clone();
+                async move |cx| {
+                    provider
+                        .write_credentials(
+                            OPENAI_CODEX_CREDENTIALS_KEY,
+                            AGENT_CREDENTIALS_USERNAME,
+                            &credentials,
+                            &cx,
+                        )
+                        .await?;
+                    provider
+                        .read_credentials(OPENAI_CODEX_CREDENTIALS_KEY, &cx)
+                        .await?
+                        .context("missing stored credentials")
+                }
+            })
+            .await?;
+
+        assert_eq!(username, AGENT_CREDENTIALS_USERNAME);
+        let stored_credentials = serde_json::from_slice::<CodexCredentials>(&stored_bytes)?;
+        assert_eq!(stored_credentials.access_token, "access-token");
+        assert_eq!(stored_credentials.refresh_token, "refresh-token");
+        assert_eq!(
+            stored_credentials.email.as_deref(),
+            Some("agent@example.com")
+        );
+
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(provider.path())?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let status = provider.status()?;
+        assert!(status.authenticated);
+        assert_eq!(status.email.as_deref(), Some("agent@example.com"));
+
+        let rotated_credentials = serde_json::to_vec(&test_credentials(
+            "rotated-access-token",
+            "rotated-refresh-token",
+            Some("rotated@example.com"),
+        ))?;
+        cx.spawn({
+            let provider = provider.clone();
+            async move |cx| {
+                provider
+                    .write_credentials(
+                        OPENAI_CODEX_CREDENTIALS_KEY,
+                        AGENT_CREDENTIALS_USERNAME,
+                        &rotated_credentials,
+                        &cx,
+                    )
+                    .await
+            }
+        })
+        .await?;
+
+        let rotated_json = provider
+            .credentials_json()
+            .context("missing rotated credentials json")?;
+        assert_eq!(
+            rotated_json["access_token"].as_str(),
+            Some("rotated-access-token")
+        );
+        assert_eq!(
+            rotated_json["refresh_token"].as_str(),
+            Some("rotated-refresh-token")
+        );
+        let status = provider.status()?;
+        assert!(status.authenticated);
+        assert_eq!(status.email.as_deref(), Some("rotated@example.com"));
+
+        cx.spawn({
+            let provider = provider.clone();
+            async move |cx| {
+                provider
+                    .delete_credentials(OPENAI_CODEX_CREDENTIALS_KEY, &cx)
+                    .await
+            }
+        })
+        .await?;
+
+        assert!(!provider.path().exists());
+        let status = provider.status()?;
+        assert!(!status.authenticated);
+        assert_eq!(status.email, None);
+        let read_after_delete = cx
+            .spawn({
+                let provider = provider.clone();
+                async move |cx| {
+                    provider
+                        .read_credentials(OPENAI_CODEX_CREDENTIALS_KEY, &cx)
+                        .await
+                }
+            })
+            .await?;
+        assert!(read_after_delete.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn pending_agent_sign_in_validates_state_expiration_and_replacement() -> Result<()> {
+        let mut pending = None;
+        let flow = begin_agent_sign_in(&mut pending)?;
+        let mismatch = take_pending_sign_in_verifier(&mut pending, "wrong-state");
+        assert!(mismatch.is_err());
+        assert!(pending.is_none());
+
+        let expired_flow = begin_agent_sign_in(&mut pending)?;
+        pending
+            .as_mut()
+            .context("missing pending sign-in")?
+            .expires_at = Instant::now() - Duration::from_secs(1);
+        let expired = take_pending_sign_in_verifier(&mut pending, &expired_flow.state);
+        assert!(expired.is_err());
+        assert!(pending.is_none());
+
+        let first = begin_agent_sign_in(&mut pending)?;
+        let second = begin_agent_sign_in(&mut pending)?;
+        assert_ne!(first.state, second.state);
+        let expected_verifier = pending
+            .as_ref()
+            .context("missing replacement sign-in")?
+            .verifier
+            .clone();
+        let verifier = take_pending_sign_in_verifier(&mut pending, &second.state)?;
+        assert_eq!(verifier, expected_verifier);
+        assert!(pending.is_none());
+        assert!(!flow.authorize_url.is_empty());
+
+        Ok(())
+    }
+
+    #[gpui::test]
+    async fn agent_sign_in_code_exchange_persists_credentials(cx: &mut TestAppContext) {
+        if let Err(error) = agent_sign_in_code_exchange_persists_credentials_impl(cx).await {
+            panic!("{error:?}");
+        }
+    }
+
+    async fn agent_sign_in_code_exchange_persists_credentials_impl(
+        cx: &mut TestAppContext,
+    ) -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let provider = Arc::new(FileBackedAgentCredentialsProvider::new_for_path(
+            temp_dir.path().join("agent").join("openai_codex.json"),
+        ));
+        let mut pending = None;
+        let flow = begin_agent_sign_in(&mut pending)?;
+        let verifier = take_pending_sign_in_verifier(&mut pending, &flow.state)?;
+        let expected_verifier = verifier.clone();
+        let request_body = Arc::new(Mutex::new(None));
+
+        let http_client =
+            FakeHttpClient::create({
+                let request_body = request_body.clone();
+                move |mut request| {
+                    let request_body = request_body.clone();
+                    let expected_verifier = expected_verifier.clone();
+                    async move {
+                        let mut body = String::new();
+                        request.body_mut().read_to_string(&mut body).await?;
+                        assert!(body.contains("grant_type=authorization_code"));
+                        assert!(body.contains("code=authorization-code"));
+                        assert!(body.contains(
+                            "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"
+                        ));
+                        assert!(body.contains(&format!("code_verifier={expected_verifier}")));
+                        *request_body
+                            .lock()
+                            .map_err(|_| anyhow!("request body lock poisoned"))? = Some(body);
+                        let body = serde_json::json!({
+                            "access_token": "host-access-token",
+                            "refresh_token": "host-refresh-token",
+                            "expires_in": 3600,
+                            "email": "host@example.com"
+                        })
+                        .to_string();
+                        Ok(http_client::Response::builder()
+                            .status(200)
+                            .body(AsyncBody::from(body))?)
+                    }
+                }
+            });
+        let http_client: Arc<dyn HttpClient> = http_client;
+
+        let credentials = oauth_callback_server::exchange_codex_code(
+            &http_client,
+            "authorization-code",
+            &verifier,
+            oauth_callback_server::CODEX_CALLBACK_REDIRECT_URI,
+        )
+        .await?;
+        let credentials_json = serde_json::to_vec(&credentials)?;
+        cx.spawn({
+            let provider = provider.clone();
+            async move |cx| {
+                provider
+                    .write_credentials(
+                        OPENAI_CODEX_CREDENTIALS_KEY,
+                        AGENT_CREDENTIALS_USERNAME,
+                        &credentials_json,
+                        &cx,
+                    )
+                    .await
+            }
+        })
+        .await?;
+
+        assert!(
+            request_body
+                .lock()
+                .map_err(|_| anyhow!("request body lock poisoned"))?
+                .is_some()
+        );
+        let status = provider.status()?;
+        assert!(status.authenticated);
+        assert_eq!(status.email.as_deref(), Some("host@example.com"));
+        let stored = provider
+            .credentials_json()
+            .context("missing exchanged credentials json")?;
+        assert_eq!(stored["access_token"].as_str(), Some("host-access-token"));
+        assert_eq!(stored["refresh_token"].as_str(), Some("host-refresh-token"));
+
+        Ok(())
+    }
 
     #[test]
     fn tool_authorization_store_first_response_wins() {

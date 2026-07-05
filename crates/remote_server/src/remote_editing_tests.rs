@@ -2597,25 +2597,6 @@ async fn test_native_agent_turn_runs_in_remote_server(
     });
 
     let proto_client = ssh.update(cx, |ssh, _cx| ssh.proto_client());
-    proto_client
-        .request(proto::UpdateAgentCredentials {
-            access_token: "fake-access-token".into(),
-            refresh_token: "fake-refresh-token".into(),
-            expires_at_ms: Some(u64::MAX / 2),
-            account_id: Some("fake-account".into()),
-            email: Some("fake@example.com".into()),
-        })
-        .await
-        .unwrap();
-    headless.update(server_cx, |headless, cx| {
-        assert!(
-            headless
-                .agent_session_host
-                .read(cx)
-                .has_forwarded_credentials()
-        );
-    });
-
     let paths = PathList::new(&[Path::new(path!("/project"))]).serialize();
     let thread_id = uuid::Uuid::new_v4().to_string();
     let create_response = proto_client

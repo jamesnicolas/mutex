@@ -124,6 +124,289 @@ fn html_escape(input: &str) -> String {
     output
 }
 
+pub const CODEX_CREDENTIALS_KEY: &str = "https://chatgpt.com/backend-api/codex";
+const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const OPENAI_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+// The OAuth client registered for `CLIENT_ID` (the Codex CLI's client) only allows
+// `http://localhost:1455/auth/callback` and `http://localhost:1457/auth/callback`
+// as redirect URIs; using anything else (different host, port, or path) causes
+// auth.openai.com to reject the authorize request with a generic `unknown_error`
+// before redirecting back. Keep these in sync with the Codex CLI's redirect URI
+// allow-list (see codex-rs/login/src/server.rs in openai/codex).
+pub const CODEX_CALLBACK_HOST: &str = "localhost";
+pub const CODEX_CALLBACK_PORT: u16 = 1455;
+pub const CODEX_CALLBACK_FALLBACK_PORT: u16 = 1457;
+pub const CODEX_CALLBACK_PATH: &str = "/auth/callback";
+pub const CODEX_CALLBACK_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+
+#[derive(Clone, Debug)]
+pub struct CodexOauthFlow {
+    pub authorize_url: String,
+    pub state: String,
+    pub verifier: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct CodexCredentials {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at_ms: u64,
+    pub account_id: Option<String>,
+    pub email: Option<String>,
+}
+
+impl CodexCredentials {
+    pub fn expires_within(&self, buffer_ms: u64) -> bool {
+        now_ms() + buffer_ms >= self.expires_at_ms
+    }
+}
+
+#[derive(Debug)]
+pub enum CodexTokenRefreshError {
+    Fatal(anyhow::Error),
+    Transient(anyhow::Error),
+}
+
+impl std::fmt::Display for CodexTokenRefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fatal(error) => write!(f, "{error}"),
+            Self::Transient(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for CodexTokenRefreshError {}
+
+#[derive(serde::Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    refresh_token: String,
+    #[serde(default)]
+    id_token: Option<String>,
+    expires_in: u64,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+pub fn build_codex_oauth_flow(redirect_uri: &str) -> anyhow::Result<CodexOauthFlow> {
+    use anyhow::Context as _;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use rand::RngCore as _;
+    use sha2::{Digest, Sha256};
+
+    let mut verifier_bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut verifier_bytes);
+    let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
+
+    let mut state_bytes = [0_u8; 16];
+    rand::rng().fill_bytes(&mut state_bytes);
+    let state: String = state_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    let mut authorize_url =
+        url::Url::parse(OPENAI_AUTHORIZE_URL).context("parse OpenAI authorize URL")?;
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", CLIENT_ID)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair(
+            "scope",
+            "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        )
+        .append_pair("response_type", "code")
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("id_token_add_organizations", "true")
+        .append_pair("state", &state)
+        .append_pair("codex_cli_simplified_flow", "true")
+        .append_pair("originator", "zed");
+
+    Ok(CodexOauthFlow {
+        authorize_url: authorize_url.to_string(),
+        state,
+        verifier,
+    })
+}
+
+pub async fn exchange_codex_code(
+    client: &std::sync::Arc<dyn http_client::HttpClient>,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<CodexCredentials> {
+    use anyhow::Context as _;
+
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "authorization_code")
+        .append_pair("client_id", CLIENT_ID)
+        .append_pair("code", code)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("code_verifier", verifier)
+        .finish();
+
+    let tokens = send_token_request(client, body)
+        .await
+        .context("exchange Codex authorization code")?;
+    Ok(credentials_from_token_response(tokens))
+}
+
+pub async fn refresh_codex_token(
+    client: &std::sync::Arc<dyn http_client::HttpClient>,
+    refresh_token: &str,
+) -> Result<CodexCredentials, CodexTokenRefreshError> {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "refresh_token")
+        .append_pair("client_id", CLIENT_ID)
+        .append_pair("refresh_token", refresh_token)
+        .finish();
+
+    let request = http_client::Request::builder()
+        .method(http_client::Method::POST)
+        .uri(OPENAI_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(http_client::AsyncBody::from(body))
+        .map_err(|error| CodexTokenRefreshError::Transient(error.into()))?;
+
+    let mut response = client
+        .send(request)
+        .await
+        .map_err(CodexTokenRefreshError::Transient)?;
+    let status = response.status();
+    let mut body = String::new();
+    smol::io::AsyncReadExt::read_to_string(response.body_mut(), &mut body)
+        .await
+        .map_err(|error| CodexTokenRefreshError::Transient(error.into()))?;
+
+    if !status.is_success() {
+        let error = anyhow::anyhow!("Token refresh failed (HTTP {}): {body}", status);
+        if status == http_client::StatusCode::BAD_REQUEST
+            || status == http_client::StatusCode::UNAUTHORIZED
+            || status == http_client::StatusCode::FORBIDDEN
+        {
+            return Err(CodexTokenRefreshError::Fatal(error));
+        }
+        return Err(CodexTokenRefreshError::Transient(error));
+    }
+
+    let tokens: TokenResponse = serde_json::from_str(&body)
+        .map_err(|error| CodexTokenRefreshError::Transient(error.into()))?;
+    Ok(credentials_from_token_response(tokens))
+}
+
+async fn send_token_request(
+    client: &std::sync::Arc<dyn http_client::HttpClient>,
+    body: String,
+) -> anyhow::Result<TokenResponse> {
+    use anyhow::Context as _;
+
+    let request = http_client::Request::builder()
+        .method(http_client::Method::POST)
+        .uri(OPENAI_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(http_client::AsyncBody::from(body))?;
+
+    let mut response = client.send(request).await?;
+    let mut body = String::new();
+    smol::io::AsyncReadExt::read_to_string(response.body_mut(), &mut body).await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Token exchange failed (HTTP {}): {body}", response.status());
+    }
+
+    serde_json::from_str::<TokenResponse>(&body).context("parse Codex token response")
+}
+
+fn credentials_from_token_response(tokens: TokenResponse) -> CodexCredentials {
+    let jwt = tokens
+        .id_token
+        .as_deref()
+        .unwrap_or(tokens.access_token.as_str());
+    let claims = extract_jwt_claims(jwt);
+
+    CodexCredentials {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at_ms: now_ms() + tokens.expires_in * 1000,
+        account_id: claims.account_id,
+        email: claims.email.or(tokens.email),
+    }
+}
+
+struct JwtClaims {
+    account_id: Option<String>,
+    email: Option<String>,
+}
+
+fn extract_jwt_claims(jwt: &str) -> JwtClaims {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let Some(payload_b64) = jwt.split('.').nth(1) else {
+        return JwtClaims {
+            account_id: None,
+            email: None,
+        };
+    };
+    let Ok(payload) = URL_SAFE_NO_PAD.decode(payload_b64) else {
+        return JwtClaims {
+            account_id: None,
+            email: None,
+        };
+    };
+    let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+        return JwtClaims {
+            account_id: None,
+            email: None,
+        };
+    };
+
+    let account_id = claims
+        .get("chatgpt_account_id")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/auth")
+                .and_then(|value| value.get("chatgpt_account_id"))
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| {
+            claims
+                .get("organizations")
+                .and_then(|value| value.as_array())
+                .and_then(|array| array.first())
+                .and_then(|organization| organization.get("id"))
+                .and_then(|value| value.as_str())
+        })
+        .map(ToOwned::to_owned);
+
+    let email = claims
+        .get("email")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+
+    JwtClaims { account_id, email }
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_else(|error| {
+            log::error!("System clock is before UNIX epoch: {error}");
+            0
+        })
+}
+
 #[cfg(not(target_family = "wasm"))]
 mod server {
     use super::oauth_callback_page;
@@ -491,3 +774,13 @@ pub use server::{
     OAuthCallbackParams, OAuthCallbackServerConfig, start_oauth_callback_server,
     start_oauth_callback_server_with_config,
 };
+
+#[cfg(not(target_family = "wasm"))]
+pub fn codex_callback_server_config() -> OAuthCallbackServerConfig {
+    OAuthCallbackServerConfig {
+        host: CODEX_CALLBACK_HOST,
+        preferred_port: CODEX_CALLBACK_PORT,
+        fallback_port: Some(CODEX_CALLBACK_FALLBACK_PORT),
+        path: CODEX_CALLBACK_PATH,
+    }
+}

@@ -277,6 +277,7 @@ dependencies = [
  "language_models",
  "log",
  "lsp",
+ "oauth_callback_server",
  "parking_lot",
  "paths",
  "pretty_assertions",
@@ -11810,8 +11811,15 @@ name = "oauth_callback_server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "futures 0.3.32",
+ "http_client",
  "log",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smol",
  "tiny_http",
  "url",
 ]
@@ -15144,6 +15152,7 @@ dependencies = [
  "minidumper",
  "net",
  "node_runtime",
+ "oauth_callback_server",
  "paths",
  "pretty_assertions",
  "project",
