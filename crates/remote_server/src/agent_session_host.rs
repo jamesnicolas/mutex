@@ -1,6 +1,8 @@
-use agent::{NativeAgent, NativeAgentConnection, SerializableThreadEvent, Templates, ThreadStore};
+use agent::{
+    AgentToolAuthorizationRequestEvent, AgentToolAuthorizationResolvedEvent, NativeAgent,
+    NativeAgentConnection, SerializableThreadEvent, Templates, ThreadStore, ToolCallAuthorization,
+};
 use agent_client_protocol::schema::v1 as acp;
-use agent_settings::{AgentProfileId, AgentSettings, builtin_profiles};
 use anyhow::{Context as _, Result, anyhow};
 use client::{Client, UserStore};
 use collections::{HashMap, HashSet};
@@ -26,6 +28,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use thiserror::Error;
 use util::ResultExt as _;
 
 const OPENAI_CODEX_CREDENTIALS_KEY: &str = "https://chatgpt.com/backend-api/codex";
@@ -264,9 +267,106 @@ impl SessionEventBuffer {
     }
 }
 
+struct HostedToolAuthorization {
+    request: AgentToolAuthorizationRequestEvent,
+    response: Option<futures::channel::oneshot::Sender<acp_thread::SelectedPermissionOutcome>>,
+    resolved_outcome: Option<acp_thread::SelectedPermissionOutcome>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+enum ToolAuthorizationResolveError {
+    #[error("agent tool authorization not found")]
+    NotFound,
+    #[error("agent tool authorization already resolved")]
+    AlreadyResolved,
+    #[error("agent tool authorization receiver was dropped")]
+    ReceiverDropped,
+}
+
+#[derive(Default)]
+struct ToolAuthorizationStore {
+    next_approval_id: u64,
+    approvals: HashMap<String, HostedToolAuthorization>,
+}
+
+impl ToolAuthorizationStore {
+    fn request(
+        &mut self,
+        session_id: acp::SessionId,
+        authorization: ToolCallAuthorization,
+    ) -> SerializableThreadEvent {
+        let approval_id = self.next_approval_id.to_string();
+        self.next_approval_id = self.next_approval_id.saturating_add(1);
+
+        let request = AgentToolAuthorizationRequestEvent {
+            session_id,
+            approval_id: approval_id.clone(),
+            tool_call: authorization.tool_call,
+            options: authorization.options,
+            kind: authorization.kind,
+        };
+
+        self.approvals.insert(
+            approval_id,
+            HostedToolAuthorization {
+                request: request.clone(),
+                response: Some(authorization.response),
+                resolved_outcome: None,
+            },
+        );
+
+        SerializableThreadEvent::agent_tool_authorization_request(&request)
+    }
+
+    fn pending_events(&self) -> Vec<SerializableThreadEvent> {
+        self.approvals
+            .values()
+            .filter(|authorization| authorization.resolved_outcome.is_none())
+            .map(|authorization| {
+                SerializableThreadEvent::agent_tool_authorization_request(&authorization.request)
+            })
+            .collect()
+    }
+
+    fn resolve(
+        &mut self,
+        approval_id: &str,
+        outcome: acp_thread::SelectedPermissionOutcome,
+    ) -> std::result::Result<SerializableThreadEvent, ToolAuthorizationResolveError> {
+        let authorization = self
+            .approvals
+            .get_mut(approval_id)
+            .ok_or(ToolAuthorizationResolveError::NotFound)?;
+
+        if authorization.resolved_outcome.is_some() {
+            return Err(ToolAuthorizationResolveError::AlreadyResolved);
+        }
+
+        let response = authorization
+            .response
+            .take()
+            .ok_or(ToolAuthorizationResolveError::AlreadyResolved)?;
+        if response.send(outcome.clone()).is_err() {
+            authorization.resolved_outcome = Some(outcome);
+            return Err(ToolAuthorizationResolveError::ReceiverDropped);
+        }
+
+        authorization.resolved_outcome = Some(outcome.clone());
+        Ok(SerializableThreadEvent::agent_tool_authorization_resolved(
+            &AgentToolAuthorizationResolvedEvent {
+                session_id: authorization.request.session_id.clone(),
+                approval_id: authorization.request.approval_id.clone(),
+                tool_call_id: authorization.request.tool_call.tool_call_id.clone(),
+                outcome,
+            },
+        ))
+    }
+}
+
 struct HostedAgentSession {
     thread: Entity<agent::Thread>,
     events: Arc<Mutex<SessionEventBuffer>>,
+    approvals: Arc<Mutex<ToolAuthorizationStore>>,
     running_turn: Option<Task<()>>,
 }
 
@@ -294,6 +394,10 @@ impl AgentSessionHost {
         session.add_request_handler(host.downgrade(), Self::handle_agent_session_prompt);
         session.add_request_handler(host.downgrade(), Self::handle_agent_session_cancel);
         session.add_request_handler(host.downgrade(), Self::handle_subscribe_agent_session);
+        session.add_request_handler(
+            host.downgrade(),
+            Self::handle_respond_agent_tool_authorization,
+        );
     }
 
     pub fn new(
@@ -319,10 +423,6 @@ impl AgentSessionHost {
         LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
             registry.register_provider(openai_provider, cx);
         });
-
-        let mut agent_settings = AgentSettings::get_global(cx).clone();
-        agent_settings.default_profile = AgentProfileId(Arc::from(builtin_profiles::MINIMAL));
-        AgentSettings::override_global(agent_settings, cx);
 
         let client = Client::production(cx);
         let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
@@ -417,6 +517,7 @@ impl AgentSessionHost {
                     HostedAgentSession {
                         thread,
                         events,
+                        approvals: Arc::new(Mutex::new(ToolAuthorizationStore::default())),
                         running_turn: None,
                     },
                 );
@@ -445,6 +546,7 @@ impl AgentSessionHost {
 
         let connection = self.connection.clone();
         let events = session.events.clone();
+        let approvals = session.approvals.clone();
         let proto_session = self.session.clone();
         let subscribed_sessions = self.subscribed_sessions.clone();
         let turn_guard = self.turn_activity.start_turn();
@@ -455,17 +557,38 @@ impl AgentSessionHost {
             async move |this, cx| {
                 let prompt_task = cx.update(|cx| {
                     let event_session_id = session_id.clone();
+                    let event_events = events.clone();
+                    let event_proto_session = proto_session.clone();
+                    let event_subscribed_sessions = subscribed_sessions.clone();
+                    let authorization_session_id = session_id.clone();
+                    let authorization_events = events.clone();
+                    let authorization_proto_session = proto_session.clone();
+                    let authorization_subscribed_sessions = subscribed_sessions.clone();
                     connection.prompt_headless(
                         session_id.clone(),
                         prompt_markdown,
                         move |event| {
                             push_buffered_event(
                                 &event_session_id,
-                                &events,
-                                &proto_session,
-                                &subscribed_sessions,
+                                &event_events,
+                                &event_proto_session,
+                                &event_subscribed_sessions,
                                 event,
                             )
+                        },
+                        move |authorization| {
+                            let event = approvals
+                                .lock()
+                                .map_err(|_| anyhow!("agent approvals lock poisoned"))?
+                                .request(authorization_session_id.clone(), authorization);
+                            push_buffered_event(
+                                &authorization_session_id,
+                                &authorization_events,
+                                &authorization_proto_session,
+                                &authorization_subscribed_sessions,
+                                event,
+                            );
+                            Ok(())
                         },
                         cx,
                     )
@@ -505,6 +628,35 @@ impl AgentSessionHost {
         Ok(())
     }
 
+    fn respond_tool_authorization(
+        &mut self,
+        session_id: acp::SessionId,
+        approval_id: String,
+        outcome: acp_thread::SelectedPermissionOutcome,
+    ) -> Result<()> {
+        let (events, approvals) = {
+            let session = self
+                .sessions
+                .get(&session_id)
+                .context("agent session not found")?;
+            (session.events.clone(), session.approvals.clone())
+        };
+
+        let event = approvals
+            .lock()
+            .map_err(|_| anyhow!("agent approvals lock poisoned"))?
+            .resolve(&approval_id, outcome)
+            .map_err(anyhow::Error::from)?;
+        push_buffered_event(
+            &session_id,
+            &events,
+            &self.session,
+            &self.subscribed_sessions,
+            event,
+        );
+        Ok(())
+    }
+
     pub fn buffered_events(&self, session_id: &acp::SessionId) -> Vec<BufferedAgentEvent> {
         self.sessions
             .get(session_id)
@@ -532,6 +684,20 @@ impl AgentSessionHost {
 
     pub fn running_turn_count(&self) -> usize {
         self.running_turn_count
+    }
+
+    #[cfg(test)]
+    pub fn pending_authorization_count(&self, session_id: &acp::SessionId) -> usize {
+        self.sessions
+            .get(session_id)
+            .and_then(|session| {
+                session
+                    .approvals
+                    .lock()
+                    .ok()
+                    .map(|approvals| approvals.pending_events().len())
+            })
+            .unwrap_or_default()
     }
 
     pub fn session_thread(&self, session_id: &acp::SessionId) -> Option<Entity<agent::Thread>> {
@@ -605,6 +771,21 @@ impl AgentSessionHost {
         Ok(proto::Ack {})
     }
 
+    async fn handle_respond_agent_tool_authorization(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::RespondAgentToolAuthorization>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::Ack> {
+        let session_id = acp::SessionId::new(envelope.payload.session_id);
+        let approval_id = envelope.payload.approval_id;
+        let outcome = serde_json::from_str(&envelope.payload.selected_outcome_json)
+            .context("deserialize selected agent tool authorization outcome")?;
+        this.update(&mut cx, |this, _cx| {
+            this.respond_tool_authorization(session_id, approval_id, outcome)
+        })?;
+        Ok(proto::Ack {})
+    }
+
     async fn handle_subscribe_agent_session(
         this: Entity<Self>,
         envelope: TypedEnvelope<proto::SubscribeAgentSession>,
@@ -612,31 +793,39 @@ impl AgentSessionHost {
     ) -> Result<proto::SubscribeAgentSessionResponse> {
         let session_id = acp::SessionId::new(envelope.payload.session_id);
         let from_sequence = envelope.payload.from_sequence;
-        let (snapshot_sequence, gap, mut replay) = this.update(&mut cx, |this, cx| {
-            let session = this
-                .sessions
-                .get(&session_id)
-                .context("agent session not found")?;
-            let (snapshot_sequence, gap) = {
-                let events = session
-                    .events
+        let (snapshot_sequence, gap, mut replay, approvals) =
+            this.update(&mut cx, |this, cx| {
+                let session = this
+                    .sessions
+                    .get(&session_id)
+                    .context("agent session not found")?;
+                let (snapshot_sequence, gap) = {
+                    let events = session
+                        .events
+                        .lock()
+                        .map_err(|_| anyhow!("agent session events lock poisoned"))?;
+                    (events.next_sequence(), events.has_gap_before(from_sequence))
+                };
+                this.subscribed_sessions
                     .lock()
-                    .map_err(|_| anyhow!("agent session events lock poisoned"))?;
-                (events.next_sequence(), events.has_gap_before(from_sequence))
-            };
-            this.subscribed_sessions
-                .lock()
-                .map_err(|_| anyhow!("agent session subscriptions lock poisoned"))?
-                .insert(session_id.clone());
-            let replay = session.thread.update(cx, |thread, cx| thread.replay(cx));
-            anyhow::Ok((snapshot_sequence, gap, replay))
-        })?;
+                    .map_err(|_| anyhow!("agent session subscriptions lock poisoned"))?
+                    .insert(session_id.clone());
+                let replay = session.thread.update(cx, |thread, cx| thread.replay(cx));
+                anyhow::Ok((snapshot_sequence, gap, replay, session.approvals.clone()))
+            })?;
 
         let mut snapshot = Vec::new();
         while let Some(event) = replay.next().await {
             snapshot.push(serializable_event_to_proto(
                 &SerializableThreadEvent::from_thread_event(&event?),
             )?);
+        }
+        let pending_approval_events = approvals
+            .lock()
+            .map_err(|_| anyhow!("agent approvals lock poisoned"))?
+            .pending_events();
+        for event in pending_approval_events {
+            snapshot.push(serializable_event_to_proto(&event)?);
         }
 
         let events = this.update(&mut cx, |this, _cx| {
@@ -727,4 +916,55 @@ fn serializable_event_to_proto(
             .context("serialize agent thread event payload")?,
         debug: event.debug.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent::AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT;
+
+    #[test]
+    fn tool_authorization_store_first_response_wins() {
+        let mut store = ToolAuthorizationStore::default();
+        let session_id = acp::SessionId::new("session");
+        let (response, receiver) = futures::channel::oneshot::channel();
+
+        let request_event = store.request(
+            session_id,
+            ToolCallAuthorization {
+                tool_call: acp::ToolCallUpdate::new(
+                    "tool-1",
+                    acp::ToolCallUpdateFields::new().title("Needs approval"),
+                ),
+                options: acp_thread::PermissionOptions::Flat(vec![acp::PermissionOption::new(
+                    acp::PermissionOptionId::new("allow"),
+                    "Allow",
+                    acp::PermissionOptionKind::AllowOnce,
+                )]),
+                response,
+                context: None,
+                kind: acp_thread::AuthorizationKind::PermissionGrant,
+            },
+        );
+        assert_eq!(
+            request_event.variant,
+            agent::AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT
+        );
+        assert_eq!(store.pending_events().len(), 1);
+
+        let outcome = acp_thread::SelectedPermissionOutcome::new(
+            acp::PermissionOptionId::new("allow"),
+            acp::PermissionOptionKind::AllowOnce,
+        );
+        let resolved_event = store.resolve("0", outcome.clone()).unwrap();
+        assert_eq!(
+            resolved_event.variant,
+            AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT
+        );
+        assert_eq!(store.pending_events().len(), 0);
+        assert_eq!(smol::block_on(receiver).unwrap(), outcome);
+
+        let second = store.resolve("0", outcome).unwrap_err();
+        assert_eq!(second, ToolAuthorizationResolveError::AlreadyResolved);
+    }
 }

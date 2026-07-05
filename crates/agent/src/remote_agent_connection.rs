@@ -1,10 +1,14 @@
-use crate::{NativeAgentConnection, SerializableThreadEvent, ThreadEvent, ZED_AGENT_ID};
+use crate::{
+    AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT, AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT,
+    AgentToolAuthorizationRequestEvent, AgentToolAuthorizationResolvedEvent, NativeAgentConnection,
+    SerializableThreadEvent, ThreadEvent, ZED_AGENT_ID,
+};
 use acp_thread::{AcpThread, AgentConnection, UserMessageId};
 use action_log::ActionLog;
 use agent_client_protocol::schema::v1 as acp;
 use anyhow::{Context as _, Result, anyhow};
 use chrono::Utc;
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 use futures::{StreamExt as _, channel::mpsc};
 use gpui::{App, AppContext as _, Entity, SharedString, Task, WeakEntity};
 use project::{self as project_crate, Project, ThreadId, ThreadMetadata, WorktreePaths};
@@ -24,6 +28,7 @@ struct RemoteSession {
     next_sequence: u64,
     prompt_events_tx: Option<mpsc::UnboundedSender<Result<ThreadEvent>>>,
     suppress_next_user_message: bool,
+    resolved_approvals: HashSet<String>,
     _live_task: Task<()>,
 }
 
@@ -98,13 +103,7 @@ impl RemoteAgentConnection {
                 self.resubscribe(session_id.clone(), cx).await?;
             }
             SequenceEvent::Apply { acp_thread, tx } => {
-                let event = serialized.to_thread_event()?;
-                if let Some(tx) = tx {
-                    tx.unbounded_send(Ok(event))
-                        .map_err(|_| anyhow!("remote prompt event receiver was dropped"))?;
-                } else {
-                    NativeAgentConnection::apply_remote_thread_event(event, &acp_thread, cx)?;
-                }
+                self.apply_serialized_event(session_id, serialized, acp_thread, tx, cx)?;
             }
         }
         Ok(())
@@ -203,16 +202,125 @@ impl RemoteAgentConnection {
                 .and_then(serializable_event_from_proto)?;
             let application = self.prepare_sequence_event(&session_id, sequence, &serialized)?;
             if let SequenceEvent::Apply { acp_thread, tx } = application {
-                let event = serialized.to_thread_event()?;
-                if let Some(tx) = tx {
-                    tx.unbounded_send(Ok(event))
-                        .map_err(|_| anyhow!("remote prompt event receiver was dropped"))?;
-                } else {
-                    NativeAgentConnection::apply_remote_thread_event(event, &acp_thread, cx)?;
-                }
+                self.apply_serialized_event(&session_id, serialized, acp_thread, tx, cx)?;
             }
         }
         Ok(())
+    }
+
+    fn apply_serialized_event(
+        &self,
+        session_id: &acp::SessionId,
+        serialized: SerializableThreadEvent,
+        acp_thread: WeakEntity<AcpThread>,
+        tx: Option<mpsc::UnboundedSender<Result<ThreadEvent>>>,
+        cx: &mut gpui::AsyncApp,
+    ) -> Result<Option<acp::PromptResponse>> {
+        if self.apply_remote_authorization_event(session_id, &serialized, &acp_thread, cx)? {
+            return Ok(None);
+        }
+
+        let event = serialized.to_thread_event()?;
+        if let Some(tx) = tx {
+            tx.unbounded_send(Ok(event))
+                .map_err(|_| anyhow!("remote prompt event receiver was dropped"))?;
+            Ok(None)
+        } else {
+            NativeAgentConnection::apply_remote_thread_event(event, &acp_thread, cx)
+        }
+    }
+
+    fn apply_remote_authorization_event(
+        &self,
+        session_id: &acp::SessionId,
+        serialized: &SerializableThreadEvent,
+        acp_thread: &WeakEntity<AcpThread>,
+        cx: &mut gpui::AsyncApp,
+    ) -> Result<bool> {
+        match serialized.variant.as_str() {
+            AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT => {
+                let request =
+                    serialized.deserialize_payload::<AgentToolAuthorizationRequestEvent>()?;
+                if &request.session_id != session_id {
+                    return Err(anyhow!("agent tool authorization session id mismatch"));
+                }
+                if self.is_approval_resolved(session_id, &request.approval_id) {
+                    return Ok(true);
+                }
+
+                let outcome_task = acp_thread.update(cx, |thread, cx| {
+                    thread.request_tool_call_authorization(
+                        request.tool_call,
+                        request.options,
+                        request.kind,
+                        cx,
+                    )
+                })??;
+
+                let proto_client = self.proto_client.clone();
+                let sessions = self.sessions.clone();
+                let session_id = session_id.clone();
+                let approval_id = request.approval_id;
+                cx.spawn(async move |_| {
+                    let acp_thread::RequestPermissionOutcome::Selected(outcome) =
+                        outcome_task.await
+                    else {
+                        return;
+                    };
+
+                    let already_resolved = sessions
+                        .borrow()
+                        .get(&session_id)
+                        .is_some_and(|session| session.resolved_approvals.contains(&approval_id));
+                    if already_resolved {
+                        return;
+                    }
+
+                    let result = async {
+                        let selected_outcome_json = serde_json::to_string(&outcome)
+                            .context("serialize selected agent tool authorization outcome")?;
+                        proto_client
+                            .request(proto::RespondAgentToolAuthorization {
+                                session_id: session_id.0.to_string(),
+                                approval_id,
+                                selected_outcome_json,
+                            })
+                            .await?;
+                        anyhow::Ok(())
+                    }
+                    .await;
+                    result.log_err();
+                })
+                .detach();
+                Ok(true)
+            }
+            AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT => {
+                let resolved =
+                    serialized.deserialize_payload::<AgentToolAuthorizationResolvedEvent>()?;
+                if &resolved.session_id != session_id {
+                    return Err(anyhow!("agent tool authorization session id mismatch"));
+                }
+                self.mark_approval_resolved(session_id, resolved.approval_id);
+                acp_thread.update(cx, |thread, cx| {
+                    thread.authorize_tool_call(resolved.tool_call_id, resolved.outcome, cx);
+                })?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn is_approval_resolved(&self, session_id: &acp::SessionId, approval_id: &str) -> bool {
+        self.sessions
+            .borrow()
+            .get(session_id)
+            .is_some_and(|session| session.resolved_approvals.contains(approval_id))
+    }
+
+    fn mark_approval_resolved(&self, session_id: &acp::SessionId, approval_id: String) {
+        if let Some(session) = self.sessions.borrow_mut().get_mut(session_id) {
+            session.resolved_approvals.insert(approval_id);
+        }
     }
 
     fn prompt_markdown(params: &[acp::ContentBlock]) -> String {
@@ -311,6 +419,7 @@ impl AgentConnection for RemoteAgentConnection {
                     next_sequence: 0,
                     prompt_events_tx: None,
                     suppress_next_user_message: false,
+                    resolved_approvals: HashSet::default(),
                     _live_task: live_task,
                 },
             );
@@ -344,6 +453,7 @@ impl AgentConnection for RemoteAgentConnection {
                     next_sequence: 0,
                     prompt_events_tx: None,
                     suppress_next_user_message: false,
+                    resolved_approvals: HashSet::default(),
                     _live_task: live_task,
                 },
             );

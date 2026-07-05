@@ -509,7 +509,8 @@ message Envelope {
     AgentSessionCancel agent_session_cancel = 474;
     SubscribeAgentSession subscribe_agent_session = 475;
     SubscribeAgentSessionResponse subscribe_agent_session_response = 476;
-    AgentSessionEvent agent_session_event = 477; // current max
+    AgentSessionEvent agent_session_event = 477;
+    RespondAgentToolAuthorization respond_agent_tool_authorization = 478; // current max
   }
 
   reserved 87 to 88;

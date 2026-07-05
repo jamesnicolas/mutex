@@ -171,6 +171,12 @@ message AgentSessionCancel {
   string session_id = 1;
 }
 
+message RespondAgentToolAuthorization {
+  string session_id = 1;
+  string approval_id = 2;
+  string selected_outcome_json = 3;
+}
+
 message SerializedAgentThreadEvent {
   string variant = 1;
   optional string payload_json = 2;

@@ -3,16 +3,18 @@
 /// We neead to find a way to test Windows-Non-Windows interactions.
 use crate::headless_project::HeadlessProject;
 use agent::{
-    AgentTool, NativeAgent, NativeAgentConnection, ReadFileTool, ReadFileToolInput,
-    SerializableThreadEvent, SkillTool, SkillToolInput, SkillToolOutput, Templates, ThreadStore,
-    ToolCallEventStream, ToolInput, skill_body_resolver_for_project, skills_resolver_for_project,
+    AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT, AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT, AgentTool,
+    AgentToolAuthorizationRequestEvent, NativeAgent, NativeAgentConnection, ReadFileTool,
+    ReadFileToolInput, SerializableThreadEvent, SkillTool, SkillToolInput, SkillToolOutput,
+    Templates, ThreadStore, ToolCallEventStream, ToolInput, skill_body_resolver_for_project,
+    skills_resolver_for_project,
 };
 use client::{Client, UserStore};
 use clock::FakeSystemClock;
 use collections::{HashMap, HashSet};
 use language_model::{
-    LanguageModel, LanguageModelProvider, LanguageModelRegistry, LanguageModelToolResultContent,
-    SelectedModel,
+    CompletionIntent, LanguageModel, LanguageModelCompletionEvent, LanguageModelProvider,
+    LanguageModelRegistry, LanguageModelToolResultContent, LanguageModelToolUse, SelectedModel,
     fake_provider::{FakeLanguageModel, FakeLanguageModelProvider},
 };
 use languages::rust_lang;
@@ -2860,6 +2862,263 @@ async fn test_native_agent_turn_runs_in_remote_server(
                 .as_deref()
                 == Some("server-side answer")
     }));
+}
+
+#[gpui::test]
+async fn test_remote_agent_tool_authorization_lifecycle(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    fs.insert_tree(
+        path!("/"),
+        json!({
+            "project": {
+                ".git": {},
+                "README.md": "remote approval test",
+            },
+            "external": {
+                "secret.txt": "SECRET_KEY=abc123",
+            },
+        }),
+    )
+    .await;
+    fs.create_symlink(
+        path!("/project/secret_link.txt").as_ref(),
+        PathBuf::from("../external/secret.txt"),
+    )
+    .await
+    .unwrap();
+
+    let (_project, headless, ssh) = init_test_with_remote_client(&fs, cx, server_cx).await;
+    let fake_model = Arc::new(FakeLanguageModel::default());
+    server_cx.update(|cx| {
+        let fake_provider = Arc::new(
+            FakeLanguageModelProvider::default()
+                .with_models(vec![fake_model.clone() as Arc<dyn LanguageModel>]),
+        );
+        let selected = SelectedModel {
+            provider: fake_provider.id(),
+            model: fake_model.id(),
+        };
+        LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
+            registry.register_provider(fake_provider, cx);
+            registry.select_default_model(Some(&selected), cx);
+        });
+    });
+    server_cx.run_until_parked();
+
+    let proto_client = ssh.update(cx, |ssh, _cx| ssh.proto_client());
+    let paths = PathList::new(&[Path::new(path!("/project"))]).serialize();
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    let create_response = proto_client
+        .request(proto::CreateAgentSession {
+            thread_metadata: Some(proto::AgentThreadMetadata {
+                thread_id,
+                session_id: None,
+                agent_id: "Mutex Agent".into(),
+                title: Some("Server approval turn".into()),
+                title_override: None,
+                parallel_attempt_group: None,
+                landed: None,
+                updated_at_millis: 1,
+                created_at_millis: Some(1),
+                interacted_at_millis: None,
+                folder_paths: Some(proto::AgentThreadPathList {
+                    paths: paths.paths.clone(),
+                    order: paths.order.clone(),
+                }),
+                main_worktree_paths: Some(proto::AgentThreadPathList {
+                    paths: paths.paths,
+                    order: paths.order,
+                }),
+                remote_connection_json: None,
+                archived: false,
+                server_hosted: true,
+            }),
+        })
+        .await
+        .unwrap();
+    let session_id = create_response.session_id;
+    let acp_session_id = agent_client_protocol::schema::v1::SessionId::new(session_id.clone());
+
+    proto_client
+        .request(proto::AgentSessionPrompt {
+            session_id: session_id.clone(),
+            prompt_markdown: "Read the symlinked secret file".into(),
+        })
+        .await
+        .unwrap();
+    server_cx.run_until_parked();
+    headless.update(server_cx, |headless, cx| {
+        let thread = headless
+            .agent_session_host
+            .read(cx)
+            .session_thread(&acp_session_id)
+            .unwrap();
+        assert!(
+            thread.read(cx).has_tool(ReadFileTool::NAME),
+            "running turn should expose the read_file tool"
+        );
+    });
+
+    let request = fake_model
+        .pending_completions()
+        .last()
+        .cloned()
+        .expect("server-side model request");
+    fake_model.send_completion_stream_event(
+        &request,
+        LanguageModelCompletionEvent::ToolUse(LanguageModelToolUse {
+            id: "remote-tool-1".into(),
+            name: ReadFileTool::NAME.into(),
+            raw_input: json!({"path": "project/secret_link.txt"}).to_string(),
+            input: json!({"path": "project/secret_link.txt"}),
+            is_input_complete: true,
+            thought_signature: None,
+        }),
+    );
+    fake_model.end_completion_stream(&request);
+
+    for _ in 0..10 {
+        server_cx.run_until_parked();
+        let pending = headless.update(server_cx, |headless, cx| {
+            headless
+                .agent_session_host
+                .read(cx)
+                .pending_authorization_count(&acp_session_id)
+        });
+        if pending == 1 {
+            break;
+        }
+    }
+    headless.update(server_cx, |headless, cx| {
+        let host = headless.agent_session_host.read(cx);
+        assert_eq!(host.running_turn_count(), 1);
+        assert_eq!(host.pending_authorization_count(&acp_session_id), 1);
+    });
+
+    let subscribe_response = proto_client
+        .request(proto::SubscribeAgentSession {
+            session_id: session_id.clone(),
+            from_sequence: 0,
+        })
+        .await
+        .unwrap();
+    let snapshot_event = subscribe_response
+        .snapshot
+        .iter()
+        .find(|event| event.variant == AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT)
+        .expect("pending approval should be included in snapshot");
+    let authorization_request: AgentToolAuthorizationRequestEvent =
+        serde_json::from_str(snapshot_event.payload_json.as_deref().unwrap()).unwrap();
+    assert_eq!(authorization_request.session_id, acp_session_id);
+    assert_eq!(
+        authorization_request.tool_call.tool_call_id,
+        agent_client_protocol::schema::v1::ToolCallId::new("remote-tool-1")
+    );
+    assert!(
+        subscribe_response.events.iter().any(|event| event
+            .event
+            .as_ref()
+            .is_some_and(|event| event.variant == AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT)),
+        "approval request should also be in the sequenced event stream"
+    );
+
+    let live_events_rx = project::subscribe_agent_session_events(&session_id);
+    let outcome = acp_thread::SelectedPermissionOutcome::new(
+        agent_client_protocol::schema::v1::PermissionOptionId::new("allow"),
+        agent_client_protocol::schema::v1::PermissionOptionKind::AllowOnce,
+    );
+    let selected_outcome_json = serde_json::to_string(&outcome).unwrap();
+    proto_client
+        .request(proto::RespondAgentToolAuthorization {
+            session_id: session_id.clone(),
+            approval_id: authorization_request.approval_id.clone(),
+            selected_outcome_json: selected_outcome_json.clone(),
+        })
+        .await
+        .unwrap();
+
+    let second_response = proto_client
+        .request(proto::RespondAgentToolAuthorization {
+            session_id: session_id.clone(),
+            approval_id: authorization_request.approval_id.clone(),
+            selected_outcome_json,
+        })
+        .await;
+    assert!(
+        second_response
+            .unwrap_err()
+            .to_string()
+            .contains("already resolved")
+    );
+
+    server_cx.run_until_parked();
+    cx.run_until_parked();
+    let mut live_events = Vec::new();
+    while let Ok(event) = live_events_rx.try_recv() {
+        live_events.push(event);
+    }
+    assert!(
+        live_events.iter().any(|event| event
+            .event
+            .as_ref()
+            .is_some_and(|event| event.variant == AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT)),
+        "approval resolution should be broadcast to attached clients"
+    );
+
+    for _ in 0..10 {
+        server_cx.run_until_parked();
+        if fake_model
+            .pending_completions()
+            .iter()
+            .any(|request| request.intent == Some(CompletionIntent::ToolResults))
+        {
+            break;
+        }
+    }
+    let follow_up_request = fake_model
+        .pending_completions()
+        .into_iter()
+        .find(|request| request.intent == Some(CompletionIntent::ToolResults))
+        .expect("turn should continue with tool result");
+    assert!(
+        format!("{:?}", follow_up_request.messages).contains("SECRET_KEY=abc123"),
+        "continued request should include the approved tool result"
+    );
+    fake_model.send_completion_stream_text_chunk(&follow_up_request, "continued after approval");
+    fake_model.end_completion_stream(&follow_up_request);
+
+    for _ in 0..10 {
+        server_cx.run_until_parked();
+        let finished = headless.update(server_cx, |headless, cx| {
+            let host = headless.agent_session_host.read(cx);
+            host.running_turn_count() == 0
+                && host
+                    .buffered_events(&acp_session_id)
+                    .iter()
+                    .any(|event| event.event.variant == "stop")
+        });
+        if finished {
+            break;
+        }
+    }
+    headless.update(server_cx, |headless, cx| {
+        let host = headless.agent_session_host.read(cx);
+        let buffered_variants = host
+            .buffered_events(&acp_session_id)
+            .iter()
+            .map(|event| event.event.variant.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            host.running_turn_count(),
+            0,
+            "buffered variants: {buffered_variants:?}; pending completions: {}",
+            fake_model.completion_count()
+        );
+        assert_eq!(host.pending_authorization_count(&acp_session_id), 0);
+    });
 }
 
 #[gpui::test]

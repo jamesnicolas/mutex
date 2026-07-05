@@ -2131,6 +2131,7 @@ impl NativeAgentConnection {
         session_id: acp::SessionId,
         prompt_markdown: String,
         on_event: impl FnMut(SerializableThreadEvent) + 'static,
+        on_authorization: impl FnMut(ToolCallAuthorization) -> Result<()> + 'static,
         cx: &mut App,
     ) -> Task<Result<acp::PromptResponse>> {
         let Some((thread, acp_thread)) = self.0.update(cx, |agent, _cx| {
@@ -2160,7 +2161,7 @@ impl NativeAgentConnection {
             response_stream,
             Some(acp_thread.downgrade()),
             Some(self.clone()),
-            ThreadEventAuthorizationMode::AutoDeny,
+            ThreadEventAuthorizationMode::ForwardToHost(Box::new(on_authorization)),
             on_event,
             cx,
         )
@@ -2228,7 +2229,7 @@ impl NativeAgentConnection {
         mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
         acp_thread: Option<WeakEntity<AcpThread>>,
         connection: Option<NativeAgentConnection>,
-        authorization_mode: ThreadEventAuthorizationMode,
+        mut authorization_mode: ThreadEventAuthorizationMode,
         mut on_event: impl FnMut(SerializableThreadEvent) + 'static,
         cx: &App,
     ) -> Task<Result<acp::PromptResponse>> {
@@ -2238,13 +2239,19 @@ impl NativeAgentConnection {
                 match result {
                     Ok(event) => {
                         log::trace!("Received completion event: {:?}", event);
-                        on_event(SerializableThreadEvent::from_thread_event(&event));
+                        if !matches!(
+                            event,
+                            ThreadEvent::ToolCallAuthorization(_)
+                                | ThreadEvent::ToolCallAuthorizationResolved { .. }
+                        ) {
+                            on_event(SerializableThreadEvent::from_thread_event(&event));
+                        }
 
                         if let Some(response) = Self::apply_thread_event_to_acp_thread(
                             event,
                             acp_thread.as_ref(),
                             connection.as_ref(),
-                            authorization_mode,
+                            &mut authorization_mode,
                             cx,
                         )? {
                             return Ok(response);
@@ -2267,11 +2274,12 @@ impl NativeAgentConnection {
         acp_thread: &WeakEntity<AcpThread>,
         cx: &mut AsyncApp,
     ) -> Result<Option<acp::PromptResponse>> {
+        let mut authorization_mode = ThreadEventAuthorizationMode::Unsupported;
         Self::apply_thread_event_to_acp_thread(
             event,
             Some(acp_thread),
             None,
-            ThreadEventAuthorizationMode::Unsupported,
+            &mut authorization_mode,
             cx,
         )
     }
@@ -2280,7 +2288,7 @@ impl NativeAgentConnection {
         event: ThreadEvent,
         acp_thread: Option<&WeakEntity<AcpThread>>,
         connection: Option<&NativeAgentConnection>,
-        authorization_mode: ThreadEventAuthorizationMode,
+        authorization_mode: &mut ThreadEventAuthorizationMode,
         cx: &mut AsyncApp,
     ) -> Result<Option<acp::PromptResponse>> {
         match event {
@@ -2314,14 +2322,15 @@ impl NativeAgentConnection {
                     thread.push_assistant_content_block(text.into(), true, cx)
                 })?;
             }
-            ThreadEvent::ToolCallAuthorization(ToolCallAuthorization {
-                tool_call,
-                options,
-                response,
-                context: _,
-                kind,
-            }) => match authorization_mode {
+            ThreadEvent::ToolCallAuthorization(authorization) => match authorization_mode {
                 ThreadEventAuthorizationMode::RequestFromAcpThread => {
+                    let ToolCallAuthorization {
+                        tool_call,
+                        options,
+                        response,
+                        context: _,
+                        kind,
+                    } = authorization;
                     let acp_thread = acp_thread.context("missing AcpThread for authorization")?;
                     let outcome_task = acp_thread.update(cx, |thread, cx| {
                         thread.request_tool_call_authorization(tool_call, options, kind, cx)
@@ -2338,17 +2347,13 @@ impl NativeAgentConnection {
                     })
                     .detach();
                 }
-                ThreadEventAuthorizationMode::AutoDeny => {
-                    let outcome = auto_deny_permission_outcome(&options)?;
-                    response
-                        .send(outcome)
-                        .map_err(|_| anyhow!("authorization receiver was dropped"))
-                        .log_err();
-                }
                 ThreadEventAuthorizationMode::Unsupported => {
                     return Err(anyhow!(
                         "server-hosted agent sessions do not support approvals yet"
                     ));
+                }
+                ThreadEventAuthorizationMode::ForwardToHost(on_authorization) => {
+                    on_authorization(authorization)?;
                 }
             },
             ThreadEvent::ToolCallAuthorizationResolved {
@@ -2423,25 +2428,10 @@ impl NativeAgentConnection {
     }
 }
 
-#[derive(Clone, Copy)]
 enum ThreadEventAuthorizationMode {
     RequestFromAcpThread,
-    AutoDeny,
     Unsupported,
-}
-
-fn auto_deny_permission_outcome(
-    options: &acp_thread::PermissionOptions,
-) -> Result<acp_thread::SelectedPermissionOutcome> {
-    let option = options
-        .first_option_of_kind(acp::PermissionOptionKind::RejectOnce)
-        .or_else(|| options.first_option_of_kind(acp::PermissionOptionKind::RejectAlways))
-        .context("permission prompt has no reject option")?;
-
-    Ok(acp_thread::SelectedPermissionOutcome::new(
-        option.option_id.clone(),
-        option.kind,
-    ))
+    ForwardToHost(Box<dyn FnMut(ToolCallAuthorization) -> Result<()>>),
 }
 
 struct Command<'a> {

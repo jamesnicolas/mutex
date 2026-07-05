@@ -847,7 +847,52 @@ pub struct SerializableThreadEvent {
     pub debug: String,
 }
 
+pub const AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT: &str = "agent_tool_authorization_request";
+pub const AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT: &str = "agent_tool_authorization_resolved";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentToolAuthorizationRequestEvent {
+    pub session_id: acp::SessionId,
+    pub approval_id: String,
+    pub tool_call: acp::ToolCallUpdate,
+    pub options: acp_thread::PermissionOptions,
+    pub kind: acp_thread::AuthorizationKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentToolAuthorizationResolvedEvent {
+    pub session_id: acp::SessionId,
+    pub approval_id: String,
+    pub tool_call_id: acp::ToolCallId,
+    pub outcome: acp_thread::SelectedPermissionOutcome,
+}
+
 impl SerializableThreadEvent {
+    pub fn agent_tool_authorization_request(event: &AgentToolAuthorizationRequestEvent) -> Self {
+        Self {
+            variant: AGENT_TOOL_AUTHORIZATION_REQUEST_EVENT.to_string(),
+            payload: serde_json::to_value(event).log_err(),
+            debug: format!("{event:?}"),
+        }
+    }
+
+    pub fn agent_tool_authorization_resolved(event: &AgentToolAuthorizationResolvedEvent) -> Self {
+        Self {
+            variant: AGENT_TOOL_AUTHORIZATION_RESOLVED_EVENT.to_string(),
+            payload: serde_json::to_value(event).log_err(),
+            debug: format!("{event:?}"),
+        }
+    }
+
+    pub fn deserialize_payload<T: DeserializeOwned>(&self) -> Result<T> {
+        let payload = self
+            .payload
+            .clone()
+            .context("serialized thread event is missing payload")?;
+        serde_json::from_value(payload)
+            .with_context(|| format!("deserialize serialized thread event {}", self.variant))
+    }
+
     pub fn from_thread_event(event: &ThreadEvent) -> Self {
         fn payload(value: &impl Serialize) -> Option<serde_json::Value> {
             serde_json::to_value(value).log_err()
@@ -932,12 +977,7 @@ impl SerializableThreadEvent {
 
     pub fn to_thread_event(&self) -> Result<ThreadEvent> {
         fn payload<T: DeserializeOwned>(event: &SerializableThreadEvent) -> Result<T> {
-            let payload = event
-                .payload
-                .clone()
-                .context("serialized thread event is missing payload")?;
-            serde_json::from_value(payload)
-                .with_context(|| format!("deserialize serialized thread event {}", event.variant))
+            event.deserialize_payload()
         }
 
         fn text_payload(event: &SerializableThreadEvent) -> Result<String> {

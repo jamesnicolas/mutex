@@ -810,12 +810,12 @@ impl From<&ResolvedLocation> for AgentLocation {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SelectedPermissionParams {
     Terminal { patterns: Vec<String> },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedPermissionOutcome {
     pub option_id: acp::PermissionOptionId,
     pub option_kind: acp::PermissionOptionKind,
@@ -859,7 +859,7 @@ impl From<RequestPermissionOutcome> for acp::RequestPermissionOutcome {
 }
 
 /// What a `WaitingForConfirmation` prompt represents semantically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthorizationKind {
     /// The user is granting or denying permission for the tool call to
     /// proceed. The selected `PermissionOptionKind` determines whether the
