@@ -2322,10 +2322,13 @@ fn collect_session_matches(cx: &App) -> Vec<SessionMatch> {
     entries
         .into_iter()
         .map(|metadata| {
-            let info = acp_thread::AgentSessionInfo::from(metadata);
+            let session_id = metadata
+                .session_id
+                .clone()
+                .unwrap_or_else(|| acp::SessionId::new(metadata.thread_id.to_key_string()));
             SessionMatch {
-                session_id: info.session_id,
-                title: session_title(info.title),
+                session_id,
+                title: session_title(metadata.title()),
             }
         })
         .collect()

@@ -86,3 +86,53 @@ message GetSharedAgentThreadResponse {
   string sharer_username = 3;
   string created_at = 4;
 }
+
+message AgentThreadPathList {
+  string paths = 1;
+  string order = 2;
+}
+
+message AgentThreadMetadata {
+  string thread_id = 1;
+  optional string session_id = 2;
+  string agent_id = 3;
+  optional string title = 4;
+  optional string title_override = 5;
+  optional string parallel_attempt_group = 6;
+  optional string landed = 7;
+  int64 updated_at_millis = 8;
+  optional int64 created_at_millis = 9;
+  optional int64 interacted_at_millis = 10;
+  AgentThreadPathList folder_paths = 11;
+  AgentThreadPathList main_worktree_paths = 12;
+  optional string remote_connection_json = 13;
+  bool archived = 14;
+}
+
+message ListAgentThreads {
+  uint64 project_id = 1;
+}
+
+message ListAgentThreadsResponse {
+  repeated AgentThreadMetadata threads = 1;
+}
+
+message UpsertAgentThread {
+  uint64 project_id = 1;
+  AgentThreadMetadata thread = 2;
+}
+
+message RemoveAgentThread {
+  uint64 project_id = 1;
+  string thread_id = 2;
+}
+
+message AgentThreadUpdated {
+  uint64 project_id = 1;
+  AgentThreadMetadata thread = 2;
+}
+
+message AgentThreadRemoved {
+  uint64 project_id = 1;
+  string thread_id = 2;
+}

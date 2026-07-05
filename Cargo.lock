@@ -523,6 +523,7 @@ dependencies = [
  "remote_server",
  "reqwest_client",
  "rope",
+ "rpc",
  "schemars 1.0.4",
  "search",
  "semver",
@@ -13933,6 +13934,7 @@ dependencies = [
 name = "project"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
  "aho-corasick",
  "anyhow",
  "askpass",
@@ -13940,6 +13942,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "buffer_diff",
+ "chrono",
  "circular-buffer",
  "client",
  "clock",
@@ -14000,6 +14003,7 @@ dependencies = [
  "unindent",
  "url",
  "util",
+ "uuid",
  "watch",
  "wax",
  "which 6.0.3",

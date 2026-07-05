@@ -20,6 +20,8 @@ pub mod task_inventory;
 pub mod task_store;
 pub mod telemetry_snapshot;
 pub mod terminals;
+pub mod thread_metadata;
+pub mod thread_registry;
 pub mod toolchain_store;
 pub mod trusted_worktrees;
 pub mod worktree_store;
@@ -53,6 +55,8 @@ pub use git_store::{
 };
 pub use manifest_tree::ManifestTree;
 pub use project_search::{Search, SearchResults};
+pub use thread_metadata::{ThreadId, ThreadLandingState, ThreadMetadata};
+pub use thread_registry::ThreadRegistry;
 pub use worktree_store::WorktreePaths;
 
 use anyhow::{Context as _, Result, anyhow};

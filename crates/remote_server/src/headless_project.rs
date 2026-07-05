@@ -15,7 +15,7 @@ use language::{Buffer, BufferEvent, LanguageRegistry, proto::serialize_operation
 use node_runtime::NodeRuntime;
 use project::{
     AgentRegistryStore, LspStore, LspStoreEvent, ManifestTree, PrettierStore, ProjectEnvironment,
-    ProjectPath, ToolchainStore, WorktreeId,
+    ProjectPath, ThreadRegistry, ToolchainStore, WorktreeId,
     agent_server_store::AgentServerStore,
     buffer_store::{BufferStore, BufferStoreEvent},
     context_server_store::ContextServerStore,
@@ -65,6 +65,7 @@ pub struct HeadlessProject {
     pub languages: Arc<LanguageRegistry>,
     pub extensions: Entity<HeadlessExtensionStore>,
     pub git_store: Entity<GitStore>,
+    pub thread_registry: Entity<ThreadRegistry>,
     pub environment: Entity<ProjectEnvironment>,
     pub profiling_collector: gpui::ProfilingCollector,
     // Used mostly to keep alive the toolchain store for RPC handlers.
@@ -252,6 +253,15 @@ impl HeadlessProject {
             context_server_store
         });
 
+        let thread_registry = cx.new(|cx| {
+            let mut thread_registry = ThreadRegistry::local(
+                paths::remote_server_state_dir().join("agent_threads.json"),
+                cx,
+            );
+            thread_registry.shared(REMOTE_SERVER_PROJECT_ID, session.clone(), cx);
+            thread_registry
+        });
+
         cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
         language_extension::init(
             language_extension::LspAccess::ViaLspStore(lsp_store.clone()),
@@ -288,6 +298,7 @@ impl HeadlessProject {
         session.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &git_store);
         session.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &agent_server_store);
         session.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &context_server_store);
+        session.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &thread_registry);
 
         session.add_request_handler(cx.weak_entity(), Self::handle_list_remote_directory);
         session.add_request_handler(cx.weak_entity(), Self::handle_get_path_metadata);
@@ -338,6 +349,7 @@ impl HeadlessProject {
         GitStore::init(&session);
         AgentServerStore::init_headless(&session);
         ContextServerStore::init_headless(&session);
+        ThreadRegistry::init(&session);
 
         HeadlessProject {
             next_entry_id: Default::default(),
@@ -355,6 +367,7 @@ impl HeadlessProject {
             languages,
             extensions,
             git_store,
+            thread_registry,
             environment,
             profiling_collector: gpui::ProfilingCollector::new(startup_time),
             _toolchain_store: toolchain_store,

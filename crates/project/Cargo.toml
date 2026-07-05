@@ -18,6 +18,11 @@ name = "integration"
 required-features = ["test-support"]
 path = "tests/integration/project_tests.rs"
 
+[[test]]
+name = "thread_registry"
+required-features = ["test-support"]
+path = "tests/integration/thread_registry.rs"
+
 [features]
 test-support = [
     "buffer_diff/test-support",
@@ -35,6 +40,7 @@ test-support = [
 
 [dependencies]
 aho-corasick.workspace = true
+agent-client-protocol.workspace = true
 anyhow.workspace = true
 askpass.workspace = true
 async-trait.workspace = true
@@ -43,6 +49,7 @@ base64.workspace = true
 buffer_diff.workspace = true
 circular-buffer.workspace = true
 client.workspace = true
+chrono.workspace = true
 clock.workspace = true
 collections.workspace = true
 context_server.workspace = true
@@ -96,6 +103,7 @@ toml.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 util.workspace = true
+uuid.workspace = true
 watch.workspace = true
 wax.workspace = true
 which.workspace = true
