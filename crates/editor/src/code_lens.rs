@@ -1615,14 +1615,12 @@ mod tests {
             .unwrap()
             .drain(..)
             .collect::<HashSet<_>>();
-        // Once the lenses are first applied we insert a placeholder block per
-        // lens row so the line is reserved while the resolve is in flight.
-        // Those placeholder blocks add display height, so after scrolling to
-        // the end the visible buffer-row range is slightly smaller than it
-        // would be without them, and lens row 60 is just outside it.
+        // The default agent workspace layout omits the editor tab bar, which
+        // leaves enough vertical room for lens row 60 to remain visible after
+        // scrolling to the end.
         assert_eq!(
             after_scroll_resolved,
-            HashSet::from_iter([70, 80, 90]),
+            HashSet::from_iter([60, 70, 80, 90]),
             "Only newly visible lenses at the bottom should be resolved, not middle ones"
         );
     }

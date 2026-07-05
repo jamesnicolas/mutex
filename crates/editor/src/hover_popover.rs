@@ -2530,23 +2530,23 @@ mod tests {
             assert!(editor.hover_state.visible());
         });
 
-        cx.update_editor(|editor, _, _| {
-            let popover = editor.hover_state.info_popovers.first().unwrap();
-            popover.last_bounds.set(Some(Bounds {
-                origin: gpui::Point {
-                    x: px(100.0),
-                    y: px(100.0),
-                },
-                size: Size {
-                    width: px(100.0),
-                    height: px(60.0),
-                },
-            }));
+        cx.run_until_parked();
+        let popover_bounds = cx.editor(|editor, _, _| {
+            editor
+                .hover_state
+                .info_popovers
+                .first()
+                .unwrap()
+                .last_bounds
+                .get()
+                .unwrap()
         });
+        let popover_right = popover_bounds.origin.x + popover_bounds.size.width;
+        let popover_middle_y = popover_bounds.origin.y + popover_bounds.size.height / 2.;
 
         let far_point = gpui::Point {
-            x: px(260.0),
-            y: px(130.0),
+            x: popover_right + px(60.0),
+            y: popover_middle_y,
         };
         cx.update_editor(|editor, window, cx| hover_at(editor, None, Some(far_point), window, cx));
 
@@ -2555,8 +2555,8 @@ mod tests {
         cx.background_executor.run_until_parked();
 
         let closer_point = gpui::Point {
-            x: px(220.0),
-            y: px(130.0),
+            x: popover_right + px(20.0),
+            y: popover_middle_y,
         };
         cx.update_editor(|editor, window, cx| {
             hover_at(editor, None, Some(closer_point), window, cx)
