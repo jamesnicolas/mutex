@@ -2,17 +2,25 @@ use crate::{ThreadId, ThreadMetadata};
 use anyhow::{Context as _, Result};
 use client::ProjectId;
 use collections::HashMap;
-use gpui::{AsyncApp, Context, Entity};
+use gpui::{AsyncApp, Context, Entity, EventEmitter};
 use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use util::{ResultExt as _, path_list::SerializedPathList};
 
 pub struct ThreadRegistry {
-    persistence_path: PathBuf,
+    persistence_path: Option<PathBuf>,
     threads: HashMap<ThreadId, ThreadMetadata>,
     downstream: Option<(AnyProtoClient, ProjectId)>,
 }
+
+#[derive(Clone, Debug)]
+pub enum ThreadRegistryEvent {
+    ThreadUpdated(ThreadMetadata),
+    ThreadRemoved(ThreadId),
+}
+
+impl EventEmitter<ThreadRegistryEvent> for ThreadRegistry {}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct PersistedThreadRegistry {
@@ -55,14 +63,25 @@ impl ThreadRegistry {
             .collect();
 
         Self {
-            persistence_path,
+            persistence_path: Some(persistence_path),
             threads,
             downstream: None,
         }
     }
 
+    pub fn remote(_cx: &mut Context<Self>) -> Self {
+        Self {
+            persistence_path: None,
+            threads: HashMap::default(),
+            downstream: None,
+        }
+    }
+
     fn reload(&mut self) -> Result<()> {
-        self.threads = Self::load(&self.persistence_path)?
+        let Some(persistence_path) = self.persistence_path.as_ref() else {
+            return Ok(());
+        };
+        self.threads = Self::load(persistence_path)?
             .into_iter()
             .map(|thread| (thread.thread_id, thread))
             .collect();
@@ -83,16 +102,19 @@ impl ThreadRegistry {
     }
 
     pub fn upsert(&mut self, metadata: ThreadMetadata, cx: &mut Context<Self>) -> Result<()> {
+        self.reload()?;
         self.threads.insert(metadata.thread_id, metadata.clone());
         self.persist()?;
         if let Some((client, project_id)) = &self.downstream {
             self.send_update(client, project_id.0, &metadata);
         }
+        cx.emit(ThreadRegistryEvent::ThreadUpdated(metadata));
         cx.notify();
         Ok(())
     }
 
     pub fn remove(&mut self, thread_id: ThreadId, cx: &mut Context<Self>) -> Result<()> {
+        self.reload()?;
         self.threads.remove(&thread_id);
         self.persist()?;
         if let Some((client, project_id)) = &self.downstream {
@@ -103,6 +125,7 @@ impl ThreadRegistry {
                 })
                 .log_err();
         }
+        cx.emit(ThreadRegistryEvent::ThreadRemoved(thread_id));
         cx.notify();
         Ok(())
     }
@@ -135,6 +158,9 @@ impl ThreadRegistry {
     }
 
     fn persist(&self) -> Result<()> {
+        let Some(persistence_path) = self.persistence_path.as_ref() else {
+            return Ok(());
+        };
         let persisted = PersistedThreadRegistry {
             threads: self
                 .list()
@@ -142,13 +168,13 @@ impl ThreadRegistry {
                 .map(PersistedThreadMetadata::try_from)
                 .collect::<Result<Vec<_>>>()?,
         };
-        if let Some(parent) = self.persistence_path.parent() {
+        if let Some(parent) = persistence_path.parent() {
             std::fs::create_dir_all(parent).context("create thread registry directory")?;
         }
-        let temp_path = self.persistence_path.with_extension("json.tmp");
+        let temp_path = persistence_path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&persisted).context("serialize thread registry")?;
         std::fs::write(&temp_path, bytes).context("write thread registry temp file")?;
-        std::fs::rename(&temp_path, &self.persistence_path).context("replace thread registry")?;
+        std::fs::rename(&temp_path, persistence_path).context("replace thread registry")?;
         Ok(())
     }
 
@@ -196,7 +222,8 @@ impl ThreadRegistry {
         let thread = envelope.payload.thread.context("missing thread metadata")?;
         let thread = ThreadMetadata::from_proto(thread)?;
         this.update(&mut cx, |this, cx| {
-            this.threads.insert(thread.thread_id, thread);
+            this.threads.insert(thread.thread_id, thread.clone());
+            cx.emit(ThreadRegistryEvent::ThreadUpdated(thread));
             cx.notify();
         });
         Ok(())
@@ -210,6 +237,7 @@ impl ThreadRegistry {
         let thread_id = ThreadId::parse(&envelope.payload.thread_id)?;
         this.update(&mut cx, |this, cx| {
             this.threads.remove(&thread_id);
+            cx.emit(ThreadRegistryEvent::ThreadRemoved(thread_id));
             cx.notify();
         });
         Ok(())

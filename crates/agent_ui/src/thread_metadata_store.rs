@@ -19,7 +19,7 @@ use db::{
 use fs::Fs;
 use futures::{FutureExt, future::Shared};
 use gpui::{AppContext as _, Entity, Global, Subscription, Task, TaskExt};
-use project::{AgentId, Project, linked_worktree_short_name};
+use project::{AgentId, Project, ThreadRegistry, ThreadRegistryEvent, linked_worktree_short_name};
 pub use project::{ThreadId, ThreadLandingState, ThreadMetadata, WorktreePaths};
 use remote::{ConnectionState, RemoteConnectionOptions, same_remote_connection_identity};
 use rpc::proto::{self, REMOTE_SERVER_PROJECT_ID};
@@ -287,6 +287,12 @@ struct RemoteRegistryClient {
     client: rpc::AnyProtoClient,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DbOperationSource {
+    LocalMutation,
+    RemoteRegistry,
+}
+
 pub fn worktree_info_from_thread_paths<S: std::hash::BuildHasher>(
     worktree_paths: &WorktreePaths,
     branch_names: &std::collections::HashMap<PathBuf, SharedString, S>,
@@ -407,6 +413,8 @@ pub struct ThreadMetadataStore {
     pending_parallel_attempt_groups: HashMap<ThreadId, String>,
     pending_thread_ops_tx: async_channel::Sender<DbOperation>,
     remote_registry_clients: Vec<RemoteRegistryClient>,
+    remote_registry_connections: HashMap<gpui::EntityId, RemoteConnectionOptions>,
+    remote_registry_subscriptions: HashMap<gpui::EntityId, Subscription>,
     in_flight_archives: HashMap<ThreadId, (Task<()>, async_channel::Sender<()>)>,
     _db_operations_task: Task<()>,
 }
@@ -436,6 +444,65 @@ impl DbOperation {
             } => remote_connection.as_ref(),
         }
     }
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct RemoteThreadReconciliation {
+    local_updates: Vec<ThreadMetadata>,
+    local_inserts: Vec<ThreadMetadata>,
+    server_upserts: Vec<ThreadMetadata>,
+}
+
+fn reconcile_remote_threads(
+    local_rows: &[ThreadMetadata],
+    server_rows: &[ThreadMetadata],
+    remote_connection: &RemoteConnectionOptions,
+) -> RemoteThreadReconciliation {
+    let local_rows = local_rows
+        .iter()
+        .filter(|thread| thread.matches_remote_connection(Some(remote_connection)))
+        .map(|thread| (thread.thread_id, thread))
+        .collect::<HashMap<_, _>>();
+    let server_rows = server_rows
+        .iter()
+        .map(|thread| {
+            (
+                thread.thread_id,
+                normalize_remote_thread_metadata(thread.clone(), remote_connection),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut reconciliation = RemoteThreadReconciliation::default();
+
+    for (thread_id, server_thread) in &server_rows {
+        match local_rows.get(thread_id) {
+            Some(local_thread) if local_thread.updated_at > server_thread.updated_at => {
+                reconciliation.server_upserts.push((*local_thread).clone());
+            }
+            Some(local_thread) if **local_thread != *server_thread => {
+                reconciliation.local_updates.push(server_thread.clone());
+            }
+            Some(_) => {}
+            None => reconciliation.local_inserts.push(server_thread.clone()),
+        }
+    }
+
+    for (thread_id, local_thread) in local_rows {
+        if !server_rows.contains_key(&thread_id) {
+            reconciliation.server_upserts.push(local_thread.clone());
+        }
+    }
+
+    reconciliation
+}
+
+fn normalize_remote_thread_metadata(
+    mut metadata: ThreadMetadata,
+    remote_connection: &RemoteConnectionOptions,
+) -> ThreadMetadata {
+    metadata.remote_connection = Some(remote_connection.clone());
+    metadata
 }
 
 /// Override for the test DB name used by `ThreadMetadataStore::init_global`.
@@ -698,6 +765,15 @@ impl ThreadMetadataStore {
     }
 
     fn save_internal(&mut self, metadata: ThreadMetadata, cx: &mut Context<Self>) {
+        self.save_internal_from_source(metadata, DbOperationSource::LocalMutation, cx);
+    }
+
+    fn save_internal_from_source(
+        &mut self,
+        metadata: ThreadMetadata,
+        source: DbOperationSource,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(thread) = self.threads.get(&metadata.thread_id) {
             if thread.folder_paths() != metadata.folder_paths() {
                 if let Some(thread_ids) = self.threads_by_paths.get_mut(thread.folder_paths()) {
@@ -717,14 +793,25 @@ impl ThreadMetadataStore {
         }
 
         self.cache_thread_metadata(metadata.clone());
-        self.queue_thread_operation(DbOperation::Upsert(metadata), cx);
+        self.queue_thread_operation(DbOperation::Upsert(metadata), source, cx);
     }
 
-    fn queue_thread_operation(&self, operation: DbOperation, cx: &mut Context<Self>) {
+    fn queue_thread_operation(
+        &self,
+        operation: DbOperation,
+        source: DbOperationSource,
+        cx: &mut Context<Self>,
+    ) {
         self.pending_thread_ops_tx
             .try_send(operation.clone())
             .log_err();
-        self.mirror_thread_operation(operation, cx);
+        if Self::should_mirror_thread_operation(source) {
+            self.mirror_thread_operation(operation, cx);
+        }
+    }
+
+    fn should_mirror_thread_operation(source: DbOperationSource) -> bool {
+        source == DbOperationSource::LocalMutation
     }
 
     fn mirror_thread_operation(&self, operation: DbOperation, cx: &mut Context<Self>) {
@@ -779,6 +866,99 @@ impl ThreadMetadataStore {
                 .detach_and_log_err(cx);
             }
         }
+    }
+
+    fn apply_remote_registry_sync(
+        &mut self,
+        remote_connection: RemoteConnectionOptions,
+        server_threads: Vec<ThreadMetadata>,
+        cx: &mut Context<Self>,
+    ) {
+        let local_threads = self.threads.values().cloned().collect::<Vec<_>>();
+        let reconciliation =
+            reconcile_remote_threads(&local_threads, &server_threads, &remote_connection);
+
+        let mut changed = false;
+        for metadata in reconciliation
+            .local_updates
+            .into_iter()
+            .chain(reconciliation.local_inserts)
+        {
+            changed |= self.apply_remote_registry_upsert(metadata, &remote_connection, cx);
+        }
+
+        for metadata in reconciliation.server_upserts {
+            self.mirror_thread_operation(DbOperation::Upsert(metadata), cx);
+        }
+
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn apply_remote_registry_upsert(
+        &mut self,
+        metadata: ThreadMetadata,
+        remote_connection: &RemoteConnectionOptions,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let metadata = normalize_remote_thread_metadata(metadata, remote_connection);
+        if let Some(existing) = self.threads.get(&metadata.thread_id) {
+            if existing == &metadata {
+                return false;
+            }
+            if existing.matches_remote_connection(Some(remote_connection))
+                && existing.updated_at > metadata.updated_at
+            {
+                self.mirror_thread_operation(DbOperation::Upsert(existing.clone()), cx);
+                return false;
+            }
+        }
+
+        self.save_internal_from_source(metadata, DbOperationSource::RemoteRegistry, cx);
+        true
+    }
+
+    fn apply_remote_registry_remove(
+        &mut self,
+        thread_id: ThreadId,
+        remote_connection: &RemoteConnectionOptions,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(thread) = self.threads.get(&thread_id) else {
+            return false;
+        };
+        if !thread.matches_remote_connection(Some(remote_connection)) {
+            return false;
+        }
+
+        self.pending_parallel_attempt_groups.remove(&thread_id);
+        if let Some(sid) = &thread.session_id {
+            self.threads_by_session.remove(sid);
+        }
+        if let Some(thread_ids) = self.threads_by_paths.get_mut(thread.folder_paths()) {
+            thread_ids.remove(&thread_id);
+        }
+        if !thread.main_worktree_paths().is_empty() {
+            if let Some(thread_ids) = self
+                .threads_by_main_paths
+                .get_mut(thread.main_worktree_paths())
+            {
+                thread_ids.remove(&thread_id);
+            }
+        }
+        self.threads.remove(&thread_id);
+        self.queue_thread_operation(
+            DbOperation::Delete {
+                thread_id,
+                remote_connection: Some(remote_connection.clone()),
+            },
+            DbOperationSource::RemoteRegistry,
+            cx,
+        );
+        crate::draft_prompt_store::delete(thread_id, cx).detach_and_log_err(cx);
+        cx.notify();
+        true
     }
 
     fn cache_thread_metadata(&mut self, metadata: ThreadMetadata) {
@@ -1074,7 +1254,7 @@ impl ThreadMetadataStore {
         }
 
         for operation in operations {
-            self.queue_thread_operation(operation, cx);
+            self.queue_thread_operation(operation, DbOperationSource::LocalMutation, cx);
         }
 
         cx.notify();
@@ -1204,6 +1384,7 @@ impl ThreadMetadataStore {
                 thread_id,
                 remote_connection,
             },
+            DbOperationSource::LocalMutation,
             cx,
         );
         crate::draft_prompt_store::delete(thread_id, cx).detach_and_log_err(cx);
@@ -1266,9 +1447,65 @@ impl ThreadMetadataStore {
             else {
                 return;
             };
+            let project_entity_id = cx.entity().entity_id();
+            let thread_registry = project.thread_registry().clone();
+            let thread_registry_for_release = thread_registry.clone();
+            let remote_client = project.remote_client();
+
+            cx.on_release({
+                let weak_store = weak_store.clone();
+                move |_project, cx| {
+                    weak_store
+                        .update(cx, |store, _cx| {
+                            if let Some(subscription) = store
+                                .remote_registry_subscriptions
+                                .remove(&project_entity_id)
+                            {
+                                drop(subscription);
+                            }
+                            store
+                                .remote_registry_connections
+                                .remove(&thread_registry_for_release.entity_id());
+                        })
+                        .ok();
+                }
+            })
+            .detach();
+
+            if let Some(remote_client) = remote_client {
+                cx.observe(&remote_client, {
+                    let weak_store = weak_store.clone();
+                    move |_project, remote_client, cx| {
+                        let remote_client = remote_client.read(cx);
+                        if remote_client.connection_state() != ConnectionState::Connected {
+                            return;
+                        }
+                        let remote_connection = remote_client.connection_options();
+                        let client = remote_client.proto_client();
+                        weak_store
+                            .update(cx, |store, cx| {
+                                store.remember_remote_registry_client(
+                                    remote_connection,
+                                    client,
+                                    true,
+                                    cx,
+                                );
+                            })
+                            .ok();
+                    }
+                })
+                .detach();
+            }
+
             weak_store
-                .update(cx, |store, _cx| {
-                    store.remember_remote_registry_client(remote_connection, client);
+                .update(cx, |store, cx| {
+                    store.observe_remote_registry(
+                        project_entity_id,
+                        thread_registry,
+                        remote_connection.clone(),
+                        cx,
+                    );
+                    store.remember_remote_registry_client(remote_connection, client, true, cx);
                 })
                 .ok();
         })
@@ -1309,6 +1546,8 @@ impl ThreadMetadataStore {
             pending_parallel_attempt_groups: HashMap::default(),
             pending_thread_ops_tx: tx,
             remote_registry_clients: Vec::new(),
+            remote_registry_connections: HashMap::default(),
+            remote_registry_subscriptions: HashMap::default(),
             in_flight_archives: HashMap::default(),
             _db_operations_task,
         };
@@ -1331,6 +1570,8 @@ impl ThreadMetadataStore {
         &mut self,
         remote_connection: RemoteConnectionOptions,
         client: rpc::AnyProtoClient,
+        sync_on_connect: bool,
+        cx: &mut Context<Self>,
     ) {
         if let Some(existing) = self.remote_registry_clients.iter_mut().find(|entry| {
             same_remote_connection_identity(
@@ -1338,13 +1579,88 @@ impl ThreadMetadataStore {
                 Some(&remote_connection),
             )
         }) {
-            existing.remote_connection = remote_connection;
-            existing.client = client;
+            existing.remote_connection = remote_connection.clone();
+            existing.client = client.clone();
         } else {
             self.remote_registry_clients.push(RemoteRegistryClient {
-                remote_connection,
-                client,
+                remote_connection: remote_connection.clone(),
+                client: client.clone(),
             });
+        }
+        if sync_on_connect && remote::has_active_connection(&remote_connection, cx) {
+            self.sync_remote_registry(remote_connection, client, cx);
+        }
+    }
+
+    fn observe_remote_registry(
+        &mut self,
+        project_entity_id: gpui::EntityId,
+        thread_registry: Entity<ThreadRegistry>,
+        remote_connection: RemoteConnectionOptions,
+        cx: &mut Context<Self>,
+    ) {
+        self.remote_registry_connections
+            .insert(thread_registry.entity_id(), remote_connection);
+        if self
+            .remote_registry_subscriptions
+            .contains_key(&project_entity_id)
+        {
+            return;
+        }
+        let subscription = cx.subscribe(&thread_registry, Self::handle_thread_registry_event);
+        self.remote_registry_subscriptions
+            .insert(project_entity_id, subscription);
+    }
+
+    fn sync_remote_registry(
+        &self,
+        remote_connection: RemoteConnectionOptions,
+        client: rpc::AnyProtoClient,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| -> anyhow::Result<()> {
+            let response = client
+                .request(proto::ListAgentThreads {
+                    project_id: REMOTE_SERVER_PROJECT_ID,
+                })
+                .await
+                .context("list remote agent threads")?;
+            let server_threads = response
+                .threads
+                .into_iter()
+                .map(ThreadMetadata::from_proto)
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            this.update(cx, |this, cx| {
+                this.apply_remote_registry_sync(remote_connection, server_threads, cx);
+            })?;
+            Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
+    fn handle_thread_registry_event(
+        &mut self,
+        thread_registry: Entity<ThreadRegistry>,
+        event: &ThreadRegistryEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(remote_connection) = self
+            .remote_registry_connections
+            .get(&thread_registry.entity_id())
+            .cloned()
+        else {
+            return;
+        };
+
+        match event {
+            ThreadRegistryEvent::ThreadUpdated(metadata) => {
+                if self.apply_remote_registry_upsert(metadata.clone(), &remote_connection, cx) {
+                    cx.notify();
+                }
+            }
+            ThreadRegistryEvent::ThreadRemoved(thread_id) => {
+                self.apply_remote_registry_remove(*thread_id, &remote_connection, cx);
+            }
         }
     }
 
@@ -1436,7 +1752,7 @@ impl ThreadMetadataStore {
             (remote_registry_client, worktree_paths, remote_connection)
         };
         if let Some((remote_connection, client)) = remote_registry_client {
-            self.remember_remote_registry_client(remote_connection, client);
+            self.remember_remote_registry_client(remote_connection, client, false, cx);
         }
 
         // Threads without a folder path (e.g. started in an empty
@@ -2035,6 +2351,26 @@ mod tests {
         }
     }
 
+    fn test_remote_connection(id: u64) -> RemoteConnectionOptions {
+        RemoteConnectionOptions::Mock(remote::MockConnectionOptions { id })
+    }
+
+    fn remote_metadata(
+        session_id: &str,
+        title: &str,
+        updated_at: DateTime<Utc>,
+        remote_connection: &RemoteConnectionOptions,
+    ) -> ThreadMetadata {
+        let mut metadata = make_metadata(
+            session_id,
+            title,
+            updated_at,
+            PathList::new(&[Path::new("/remote-project")]),
+        );
+        metadata.remote_connection = Some(remote_connection.clone());
+        metadata
+    }
+
     fn init_test(cx: &mut TestAppContext) {
         let fs = FakeFs::new(cx.executor());
         cx.update(|cx| {
@@ -2082,6 +2418,157 @@ mod tests {
             migrate_thread_remote_connections(cx, migration_task);
         });
         cx.run_until_parked();
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_server_newer_updates_local_cache() {
+        let remote_connection = test_remote_connection(1);
+        let now = Utc::now();
+        let local = remote_metadata("session-1", "Local", now, &remote_connection);
+        let mut server = ThreadMetadata {
+            title: Some("Server".into()),
+            updated_at: now + chrono::Duration::seconds(1),
+            remote_connection: None,
+            ..local.clone()
+        };
+        server.thread_id = local.thread_id;
+
+        let reconciliation =
+            reconcile_remote_threads(&[local], &[server.clone()], &remote_connection);
+
+        assert_eq!(reconciliation.local_updates.len(), 1);
+        assert_eq!(
+            reconciliation.local_updates[0],
+            normalize_remote_thread_metadata(server, &remote_connection)
+        );
+        assert!(reconciliation.local_inserts.is_empty());
+        assert!(reconciliation.server_upserts.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_local_newer_pushes_to_server() {
+        let remote_connection = test_remote_connection(1);
+        let now = Utc::now();
+        let local = remote_metadata("session-1", "Local", now, &remote_connection);
+        let mut server = ThreadMetadata {
+            title: Some("Server".into()),
+            updated_at: now - chrono::Duration::seconds(1),
+            remote_connection: None,
+            ..local.clone()
+        };
+        server.thread_id = local.thread_id;
+
+        let reconciliation = reconcile_remote_threads(
+            std::slice::from_ref(&local),
+            std::slice::from_ref(&server),
+            &remote_connection,
+        );
+
+        assert!(reconciliation.local_updates.is_empty());
+        assert!(reconciliation.local_inserts.is_empty());
+        assert_eq!(reconciliation.server_upserts, vec![local]);
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_equal_timestamp_server_wins() {
+        let remote_connection = test_remote_connection(1);
+        let now = Utc::now();
+        let local = remote_metadata("session-1", "Local", now, &remote_connection);
+        let mut server = ThreadMetadata {
+            title: Some("Server".into()),
+            remote_connection: None,
+            ..local.clone()
+        };
+        server.thread_id = local.thread_id;
+
+        let reconciliation =
+            reconcile_remote_threads(&[local], &[server.clone()], &remote_connection);
+
+        assert_eq!(
+            reconciliation.local_updates,
+            vec![normalize_remote_thread_metadata(server, &remote_connection)]
+        );
+        assert!(reconciliation.local_inserts.is_empty());
+        assert!(reconciliation.server_upserts.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_local_only_backfills_server() {
+        let remote_connection = test_remote_connection(1);
+        let local = remote_metadata("session-1", "Local", Utc::now(), &remote_connection);
+
+        let reconciliation =
+            reconcile_remote_threads(std::slice::from_ref(&local), &[], &remote_connection);
+
+        assert!(reconciliation.local_updates.is_empty());
+        assert!(reconciliation.local_inserts.is_empty());
+        assert_eq!(reconciliation.server_upserts, vec![local]);
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_server_only_inserts_local_cache() {
+        let remote_connection = test_remote_connection(1);
+        let server = make_metadata(
+            "session-1",
+            "Server",
+            Utc::now(),
+            PathList::new(&[Path::new("/remote-project")]),
+        );
+
+        let reconciliation =
+            reconcile_remote_threads(&[], std::slice::from_ref(&server), &remote_connection);
+
+        assert!(reconciliation.local_updates.is_empty());
+        assert_eq!(
+            reconciliation.local_inserts,
+            vec![normalize_remote_thread_metadata(server, &remote_connection)]
+        );
+        assert!(reconciliation.server_upserts.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_archived_flag_follows_timestamp_rule() {
+        let remote_connection = test_remote_connection(1);
+        let now = Utc::now();
+        let local = remote_metadata("session-1", "Local", now, &remote_connection);
+        let mut server = ThreadMetadata {
+            archived: true,
+            updated_at: now + chrono::Duration::seconds(1),
+            remote_connection: None,
+            ..local.clone()
+        };
+        server.thread_id = local.thread_id;
+
+        let reconciliation =
+            reconcile_remote_threads(&[local], &[server.clone()], &remote_connection);
+
+        assert_eq!(
+            reconciliation.local_updates,
+            vec![normalize_remote_thread_metadata(server, &remote_connection)]
+        );
+        assert!(reconciliation.local_updates[0].archived);
+        assert!(reconciliation.local_inserts.is_empty());
+        assert!(reconciliation.server_upserts.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_remote_threads_empty_sides() {
+        let remote_connection = test_remote_connection(1);
+
+        assert_eq!(
+            reconcile_remote_threads(&[], &[], &remote_connection),
+            RemoteThreadReconciliation::default()
+        );
+    }
+
+    #[test]
+    fn test_remote_registry_operations_do_not_mirror_back_to_server() {
+        assert!(ThreadMetadataStore::should_mirror_thread_operation(
+            DbOperationSource::LocalMutation
+        ));
+        assert!(!ThreadMetadataStore::should_mirror_thread_operation(
+            DbOperationSource::RemoteRegistry
+        ));
     }
 
     #[test]

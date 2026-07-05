@@ -56,7 +56,7 @@ pub use git_store::{
 pub use manifest_tree::ManifestTree;
 pub use project_search::{Search, SearchResults};
 pub use thread_metadata::{ThreadId, ThreadLandingState, ThreadMetadata};
-pub use thread_registry::ThreadRegistry;
+pub use thread_registry::{ThreadRegistry, ThreadRegistryEvent};
 pub use worktree_store::WorktreePaths;
 
 use anyhow::{Context as _, Result, anyhow};
@@ -220,6 +220,7 @@ pub struct Project {
     languages: Arc<LanguageRegistry>,
     dap_store: Entity<DapStore>,
     agent_server_store: Entity<AgentServerStore>,
+    thread_registry: Entity<ThreadRegistry>,
 
     bookmark_store: Entity<BookmarkStore>,
     breakpoint_store: Entity<BreakpointStore>,
@@ -1328,6 +1329,7 @@ impl Project {
                     cx,
                 )
             });
+            let thread_registry = cx.new(ThreadRegistry::remote);
 
             cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
 
@@ -1357,6 +1359,7 @@ impl Project {
                 breakpoint_store,
                 dap_store,
                 agent_server_store,
+                thread_registry,
 
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
@@ -1554,6 +1557,7 @@ impl Project {
                     worktree_store.clone(),
                 )
             });
+            let thread_registry = cx.new(ThreadRegistry::remote);
 
             cx.subscribe(&remote, Self::on_remote_client_event).detach();
 
@@ -1572,6 +1576,7 @@ impl Project {
                 client_state: ProjectClientState::Local,
                 git_store,
                 agent_server_store,
+                thread_registry,
                 client_subscriptions: Vec::new(),
                 _subscriptions: vec![
                     cx.on_release(Self::release),
@@ -1630,6 +1635,7 @@ impl Project {
             remote_proto.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &this.settings_observer);
             remote_proto.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &this.git_store);
             remote_proto.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &this.agent_server_store);
+            remote_proto.subscribe_to_entity(REMOTE_SERVER_PROJECT_ID, &this.thread_registry);
 
             remote_proto.add_entity_message_handler(Self::handle_create_buffer_for_peer);
             remote_proto.add_entity_message_handler(Self::handle_create_image_for_peer);
@@ -1655,6 +1661,7 @@ impl Project {
             BreakpointStore::init(&remote_proto);
             GitStore::init(&remote_proto);
             AgentServerStore::init_remote(&remote_proto);
+            ThreadRegistry::init(&remote_proto);
 
             this
         })
@@ -1821,6 +1828,7 @@ impl Project {
         });
 
         let agent_server_store = cx.new(|_cx| AgentServerStore::collab());
+        let thread_registry = cx.new(ThreadRegistry::remote);
         let replica_id = ReplicaId::new(response.payload.replica_id as u16);
 
         let project = cx.new(|cx| {
@@ -1890,6 +1898,7 @@ impl Project {
                 dap_store: dap_store.clone(),
                 git_store: git_store.clone(),
                 agent_server_store,
+                thread_registry,
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
                 terminals: Terminals {
@@ -6137,6 +6146,10 @@ impl Project {
 
     pub fn agent_server_store(&self) -> &Entity<AgentServerStore> {
         &self.agent_server_store
+    }
+
+    pub fn thread_registry(&self) -> &Entity<ThreadRegistry> {
+        &self.thread_registry
     }
 
     #[cfg(feature = "test-support")]
