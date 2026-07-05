@@ -2528,7 +2528,7 @@ fn model_id_to_selection(model_id: &AgentModelId, cx: &App) -> LanguageModelSele
         return LanguageModelSelection {
             provider: provider.to_owned().into(),
             model: model.to_owned(),
-            enable_thinking: false,
+            enable_thinking: true,
             effort: None,
             speed: None,
         };

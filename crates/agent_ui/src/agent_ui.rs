@@ -276,8 +276,6 @@ actions!(
         ClearMessageQueue,
         /// Opens the permission granularity dropdown for the current tool call.
         OpenPermissionDropdown,
-        /// Toggles thinking mode for models that support extended thinking.
-        ToggleThinkingMode,
         /// Cycles through available thinking effort levels for the current model.
         CycleThinkingEffort,
         /// Toggles the thinking effort selector menu open or closed.

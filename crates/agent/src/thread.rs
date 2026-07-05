@@ -1300,10 +1300,9 @@ impl Thread {
     ) -> Self {
         let settings = AgentSettings::get_global(cx);
         let profile_id = settings.default_profile.clone();
-        let enable_thinking = settings
-            .default_model
+        let enable_thinking = model
             .as_ref()
-            .is_some_and(|model| model.enable_thinking);
+            .is_some_and(|model| model.supports_thinking());
         let thinking_effort = settings
             .default_model
             .as_ref()
@@ -1391,7 +1390,7 @@ impl Thread {
             return;
         };
 
-        self.thinking_enabled = selection.enable_thinking && model.supports_thinking();
+        self.thinking_enabled = model.supports_thinking();
         self.thinking_effort = selection.effort.clone();
         self.speed = selection.speed.filter(|_| model.supports_fast_mode());
         self.prompt_capabilities_tx
@@ -1694,6 +1693,10 @@ impl Thread {
         let (prompt_capabilities_tx, prompt_capabilities_rx) = watch::channel(
             Self::prompt_capabilities(model.as_model().map(|model| model.as_ref())),
         );
+        let thinking_enabled = db_thread.thinking_enabled
+            || model
+                .as_model()
+                .is_some_and(|model| model.supports_thinking());
 
         let action_log = cx.new(|_| ActionLog::new(project.clone()).with_auto_accept_edits());
 
@@ -1726,7 +1729,7 @@ impl Thread {
             templates,
             model,
             summarization_model: None,
-            thinking_enabled: db_thread.thinking_enabled,
+            thinking_enabled,
             thinking_effort: db_thread.thinking_effort,
             speed: db_thread.speed,
             project,
@@ -1859,6 +1862,7 @@ impl Thread {
     pub fn set_model(&mut self, model: Arc<dyn LanguageModel>, cx: &mut Context<Self>) {
         let old_usage = self.latest_token_usage();
         self.model = ThreadModel::Ready(model.clone());
+        self.thinking_enabled = model.supports_thinking();
         let new_caps = Self::prompt_capabilities(self.model.as_model().map(|model| model.as_ref()));
         let new_usage = self.latest_token_usage();
         if old_usage != new_usage {
@@ -3764,10 +3768,7 @@ impl Thread {
             tool_choice: None,
             stop: Vec::new(),
             temperature: AgentSettings::temperature_for_model(model, cx),
-            // Models that can't run with thinking disabled ignore the
-            // toggle state, which may be stale from a previously selected
-            // model that could.
-            thinking_allowed: self.thinking_enabled || !model.supports_disabling_thinking(),
+            thinking_allowed: model.supports_thinking(),
             thinking_effort: self.thinking_effort.clone(),
             speed: self.speed(),
             compact_at_tokens: None,

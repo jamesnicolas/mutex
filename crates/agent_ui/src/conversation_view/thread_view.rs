@@ -38,10 +38,7 @@ use language_model::{
     LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry, Speed,
 };
 use settings::{update_settings_file, update_settings_file_with_completion};
-use ui::{
-    ButtonLike, CalloutBorderPosition, SpinnerLabel, SpinnerVariant, SplitButton, SplitButtonStyle,
-    Tab,
-};
+use ui::{ButtonLike, CalloutBorderPosition, SpinnerLabel, SpinnerVariant, Tab};
 use workspace::notifications::{NotificationId, NotifyTaskExt};
 use workspace::{OpenOptions, SERIALIZATION_THROTTLE_TIME};
 
@@ -5342,100 +5339,17 @@ impl ThreadView {
         let thread = self.as_native_thread(cx)?.read(cx);
         let model = thread.model()?;
 
-        let supports_thinking = model.supports_thinking();
-        if !supports_thinking {
+        if !model.supports_thinking() {
             return None;
         }
 
-        // A toggle would be dishonest for models that always think: only
-        // offer the effort selector.
-        if !model.supports_disabling_thinking() {
-            let effort_levels = model.supported_effort_levels();
-            if effort_levels.is_empty() {
-                return None;
-            }
-            return Some(
-                self.render_effort_selector(
-                    effort_levels,
-                    thread.thinking_effort().cloned(),
-                    true,
-                    cx,
-                )
-                .into_any_element(),
-            );
+        let effort_levels = model.supported_effort_levels();
+        if effort_levels.is_empty() {
+            return None;
         }
-
-        let thinking = thread.thinking_enabled();
-
-        let (tooltip_label, icon, color) = if thinking {
-            (
-                "Disable Thinking Mode",
-                IconName::ThinkingMode,
-                Color::Muted,
-            )
-        } else {
-            (
-                "Enable Thinking Mode",
-                IconName::ThinkingModeOff,
-                Color::Custom(cx.theme().colors().icon_disabled.opacity(0.8)),
-            )
-        };
-
-        let focus_handle = self.message_editor.focus_handle(cx);
-
-        let thinking_toggle = IconButton::new("thinking-mode", icon)
-            .icon_size(IconSize::Small)
-            .icon_color(color)
-            .tooltip(move |_, cx| {
-                Tooltip::for_action_in(tooltip_label, &ToggleThinkingMode, &focus_handle, cx)
-            })
-            .on_click(cx.listener(move |this, _, _window, cx| {
-                if let Some(thread) = this.as_native_thread(cx) {
-                    thread.update(cx, |thread, cx| {
-                        let enable_thinking = !thread.thinking_enabled();
-                        thread.set_thinking_enabled(enable_thinking, cx);
-
-                        let favorite_key = thread.model().map(|model| {
-                            (model.provider_id().0.to_string(), model.id().0.to_string())
-                        });
-                        let fs = thread.project().read(cx).fs().clone();
-                        update_settings_file(fs, cx, move |settings, _| {
-                            if let Some(agent) = settings.agent.as_mut() {
-                                if let Some(default_model) = agent.default_model.as_mut() {
-                                    default_model.enable_thinking = enable_thinking;
-                                }
-                                if let Some((provider_id, model_id)) = &favorite_key {
-                                    agent.update_favorite_model(
-                                        provider_id,
-                                        model_id,
-                                        |favorite| favorite.enable_thinking = enable_thinking,
-                                    );
-                                }
-                            }
-                        });
-                    });
-                }
-            }));
-
-        if model.supported_effort_levels().is_empty() {
-            return Some(thinking_toggle.into_any_element());
-        }
-
-        if !model.supported_effort_levels().is_empty() && !thinking {
-            return Some(thinking_toggle.into_any_element());
-        }
-
-        let left_btn = thinking_toggle;
-        let right_btn = self.render_effort_selector(
-            model.supported_effort_levels(),
-            thread.thinking_effort().cloned(),
-            false,
-            cx,
-        );
 
         Some(
-            SplitButton::new(left_btn, right_btn.into_any_element())
-                .style(SplitButtonStyle::Transparent)
+            self.render_effort_selector(effort_levels, thread.thinking_effort().cloned(), true, cx)
                 .into_any_element(),
         )
     }
@@ -11701,7 +11615,7 @@ impl ThreadView {
             let Some(model) = thread_ref.model() else {
                 return;
             };
-            if !model.supports_thinking() || !thread_ref.thinking_enabled() {
+            if !model.supports_thinking() {
                 return;
             }
             let effort_levels = model.supported_effort_levels();
@@ -11893,21 +11807,6 @@ impl Render for ThreadView {
             .on_action(cx.listener(Self::retry_in_new_worktree))
             .on_action(cx.listener(|this, _: &ToggleFastMode, window, cx| {
                 this.toggle_fast_mode(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleThinkingMode, _window, cx| {
-                if this.thread.read(cx).status() != ThreadStatus::Idle {
-                    return;
-                }
-                if let Some(thread) = this.as_native_thread(cx) {
-                    thread.update(cx, |thread, cx| {
-                        let model_allows_disabling = thread
-                            .model()
-                            .is_none_or(|model| model.supports_disabling_thinking());
-                        if model_allows_disabling {
-                            thread.set_thinking_enabled(!thread.thinking_enabled(), cx);
-                        }
-                    });
-                }
             }))
             .on_action(cx.listener(|this, _: &CycleThinkingEffort, _window, cx| {
                 if this.thread.read(cx).status() != ThreadStatus::Idle {

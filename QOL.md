@@ -17,7 +17,7 @@ hands. Check items off with the commit hash that landed them.
 
 ## Chrome / de-Zed-ing
 
-- [ ] Remove the "disable thinking" button; thinking on by default
+- [x] Remove the "disable thinking" button; thinking on by default
 - [ ] Remove the bottom-right status bar icons: "debug", "collab",
       "edit predictions"
 - [ ] Remove "follow mutex agent" (cool Zed gimmick, not needed)
