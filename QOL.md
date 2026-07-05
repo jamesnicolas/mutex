@@ -20,7 +20,7 @@ hands. Check items off with the commit hash that landed them.
 - [x] Remove the "disable thinking" button; thinking on by default
 - [x] Remove the bottom-right status bar icons: "debug", "collab",
       "edit predictions"
-- [ ] Remove "follow mutex agent" (cool Zed gimmick, not needed)
+- [x] Remove "follow mutex agent" (cool Zed gimmick, not needed)
 
 ## Panels / editor behavior
 

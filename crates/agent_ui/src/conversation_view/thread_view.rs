@@ -589,7 +589,6 @@ pub struct ThreadView {
     pub plan_expanded: bool,
     pub queue_expanded: bool,
     pub editor_expanded: bool,
-    pub should_be_following: bool,
     pub editing_message: Option<usize>,
     pub local_queued_messages: Vec<QueuedMessage>,
     pub queued_message_editors: Vec<Entity<MessageEditor>>,
@@ -987,7 +986,6 @@ impl ThreadView {
             plan_expanded: false,
             queue_expanded: true,
             editor_expanded: false,
-            should_be_following: false,
             editing_message: None,
             local_queued_messages: Vec::new(),
             queued_message_editors: Vec::new(),
@@ -1811,14 +1809,6 @@ impl ThreadView {
         self.thread_feedback.clear();
         self.editing_message.take();
 
-        if self.should_be_following {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.follow(CollaboratorId::Agent, window, cx);
-                })
-                .ok();
-        }
-
         let contents_task = cx.spawn_in(window, async move |_this, cx| {
             let (contents, tracked_buffers) = contents.await?;
 
@@ -1975,17 +1965,6 @@ impl ThreadView {
             if let Err(err) = task.await {
                 this.update(cx, |this, cx| {
                     this.handle_thread_error(err, cx);
-                })
-                .ok();
-            } else {
-                this.update(cx, |this, cx| {
-                    let should_be_following = this
-                        .workspace
-                        .update(cx, |workspace, _| {
-                            workspace.is_being_followed(CollaboratorId::Agent)
-                        })
-                        .unwrap_or_default();
-                    this.should_be_following = should_be_following;
                 })
                 .ok();
             }
@@ -2367,18 +2346,8 @@ impl ThreadView {
 
         let cancelled = self.thread.update(cx, |thread, cx| thread.cancel(cx));
 
-        let workspace = self.workspace.clone();
-
-        let should_be_following = self.should_be_following;
-        let contents_task = cx.spawn_in(window, async move |_this, cx| {
+        let contents_task = cx.spawn_in(window, async move |_this, _cx| {
             cancelled.await;
-            if should_be_following {
-                workspace
-                    .update_in(cx, |workspace, window, cx| {
-                        workspace.follow(CollaboratorId::Agent, window, cx);
-                    })
-                    .ok();
-            }
 
             Ok(Some((content, tracked_buffers)))
         });
@@ -2583,19 +2552,12 @@ impl ThreadView {
         session_id: acp::SessionId,
         tool_call_id: acp::ToolCallId,
         outcome: SelectedPermissionOutcome,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.conversation.update(cx, |conversation, cx| {
             conversation.authorize_tool_call(session_id, tool_call_id, outcome, cx);
         });
-        if self.should_be_following {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.follow(CollaboratorId::Agent, window, cx);
-                })
-                .ok();
-        }
         cx.notify();
     }
 
@@ -2614,20 +2576,13 @@ impl ThreadView {
     pub fn authorize_pending_tool_call(
         &mut self,
         kind: acp::PermissionOptionKind,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<()> {
         let session_id = self.thread.read(cx).session_id().clone();
         self.conversation.update(cx, |conversation, cx| {
             conversation.authorize_pending_tool_call(&session_id, kind, cx)
         })?;
-        if self.should_be_following {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.follow(CollaboratorId::Agent, window, cx);
-                })
-                .ok();
-        }
         cx.notify();
         Some(())
     }
@@ -2752,7 +2707,7 @@ impl ThreadView {
         session_id: acp::SessionId,
         tool_call_id: acp::ToolCallId,
         is_allow: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<()> {
         let selection = self.permission_selections.get(&tool_call_id).cloned();
@@ -2765,13 +2720,6 @@ impl ThreadView {
                 cx,
             )
         });
-        if self.should_be_following {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.follow(CollaboratorId::Agent, window, cx);
-                })
-                .ok();
-        }
         cx.notify();
         result
     }
@@ -3338,37 +3286,6 @@ impl ThreadView {
         self.thread_error_markdown = None;
         self.token_limit_callout_dismissed = true;
         cx.notify();
-    }
-
-    fn is_following(&self, cx: &App) -> bool {
-        match self.thread.read(cx).status() {
-            ThreadStatus::Generating => self
-                .workspace
-                .read_with(cx, |workspace, _| {
-                    workspace.is_being_followed(CollaboratorId::Agent)
-                })
-                .unwrap_or(false),
-            _ => self.should_be_following,
-        }
-    }
-
-    fn toggle_following(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let following = self.is_following(cx);
-
-        self.should_be_following = !following;
-        if self.thread.read(cx).status() == ThreadStatus::Generating {
-            self.workspace
-                .update(cx, |workspace, cx| {
-                    if following {
-                        workspace.unfollow(CollaboratorId::Agent, window, cx);
-                    } else {
-                        workspace.follow(CollaboratorId::Agent, window, cx);
-                    }
-                })
-                .ok();
-        }
-
-        telemetry::event!("Follow Agent Selected", following = !following);
     }
 
     fn callout_border_position(&self) -> CalloutBorderPosition {
@@ -4782,7 +4699,6 @@ impl ThreadView {
                 h_flex()
                     .gap_0p5()
                     .child(self.render_add_context_button(cx))
-                    .child(self.render_follow_toggle(cx))
                     .children(self.render_fast_mode_control(cx))
                     .children(self.render_thinking_control(cx)),
             )
@@ -5794,45 +5710,6 @@ impl ThreadView {
                     editor.insert_skill_crease(&skill, window, cx);
                 });
             })
-    }
-
-    fn render_follow_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let following = self.is_following(cx);
-
-        let tooltip_label = if following {
-            if self.agent_id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
-                format!("Stop Following the {}", self.agent_id)
-            } else {
-                format!("Stop Following {}", self.agent_id)
-            }
-        } else {
-            if self.agent_id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
-                format!("Follow the {}", self.agent_id)
-            } else {
-                format!("Follow {}", self.agent_id)
-            }
-        };
-
-        IconButton::new("follow-agent", IconName::Crosshair)
-            .icon_size(IconSize::Small)
-            .icon_color(Color::Muted)
-            .toggle_state(following)
-            .selected_icon_color(Some(Color::Custom(cx.theme().players().agent().cursor)))
-            .tooltip(move |_window, cx| {
-                if following {
-                    Tooltip::for_action(tooltip_label.clone(), &Follow, cx)
-                } else {
-                    Tooltip::with_meta(
-                        tooltip_label.clone(),
-                        Some(&Follow),
-                        "Track the agent's location as it reads and edits files.",
-                        cx,
-                    )
-                }
-            })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.toggle_following(window, cx);
-            }))
     }
 }
 

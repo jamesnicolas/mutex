@@ -71,8 +71,7 @@ use util::{
     time::duration_alt_display,
 };
 use workspace::{
-    CollaboratorId, MultiWorkspace, NewTerminal, PathList, Toast, Workspace,
-    path_link::sanitize_path_text,
+    MultiWorkspace, NewTerminal, PathList, Toast, Workspace, path_link::sanitize_path_text,
 };
 use zed_actions::agent::{Chat, ToggleModelSelector};
 
@@ -95,12 +94,12 @@ use crate::{
     Agent, AgentDiffPane, AgentInitialContent, AgentPanel, AgentPanelEvent, AllowAlways, AllowOnce,
     ArchiveThread, AuthorizeToolCall, ClearMessageQueue, CreateThreadPullRequest,
     CycleFavoriteModels, CycleModeSelector, CycleThinkingEffort, EditFirstQueuedMessage,
-    ExpandMessageEditor, Follow, KeepAll, MergeThreadChanges, NewThread, OpenAddContextMenu,
-    OpenAgentDiff, RejectAll, RejectOnce, RemoveFirstQueuedMessage, RetryInNewWorktree,
-    ReviewThreadBranchChanges, ScrollOutputLineDown, ScrollOutputLineUp, ScrollOutputPageDown,
-    ScrollOutputPageUp, ScrollOutputToBottom, ScrollOutputToNextMessage,
-    ScrollOutputToPreviousMessage, ScrollOutputToTop, SendImmediately, SendNextQueuedMessage,
-    ToggleFastMode, ToggleProfileSelector, ToggleThinkingEffortMenu, UndoLastReject,
+    ExpandMessageEditor, KeepAll, MergeThreadChanges, NewThread, OpenAddContextMenu, OpenAgentDiff,
+    RejectAll, RejectOnce, RemoveFirstQueuedMessage, RetryInNewWorktree, ReviewThreadBranchChanges,
+    ScrollOutputLineDown, ScrollOutputLineUp, ScrollOutputPageDown, ScrollOutputPageUp,
+    ScrollOutputToBottom, ScrollOutputToNextMessage, ScrollOutputToPreviousMessage,
+    ScrollOutputToTop, SendImmediately, SendNextQueuedMessage, ToggleFastMode,
+    ToggleProfileSelector, ToggleThinkingEffortMenu, UndoLastReject,
 };
 
 const STOPWATCH_THRESHOLD: Duration = Duration::from_secs(30);

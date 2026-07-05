@@ -214,8 +214,6 @@ actions!(
         RemoveSelectedThread,
         /// Renames the currently selected thread.
         RenameSelectedThread,
-        /// Starts a chat conversation with follow-up enabled.
-        ChatWithFollow,
         /// Cycles to the next inline assist suggestion.
         CycleNextInlineAssist,
         /// Cycles to the previous inline assist suggestion.
@@ -254,8 +252,6 @@ actions!(
         AllowAlways,
         /// Reject this operation only this time.
         RejectOnce,
-        /// Follows the agent's suggestions.
-        Follow,
         /// Resets the trial upsell notification.
         ResetTrialUpsell,
         /// Resets the trial end upsell notification.

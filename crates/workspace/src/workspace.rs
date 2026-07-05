@@ -811,9 +811,6 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
         });
 }
 
-type BuildProjectItemFn =
-    fn(AnyEntity, Entity<Project>, Option<&Pane>, &mut Window, &mut App) -> Box<dyn ItemHandle>;
-
 type BuildProjectItemForPathFn =
     fn(
         &Entity<Project>,
@@ -824,20 +821,11 @@ type BuildProjectItemForPathFn =
 
 #[derive(Clone, Default)]
 struct ProjectItemRegistry {
-    build_project_item_fns_by_type: TypeIdHashMap<BuildProjectItemFn>,
     build_project_item_for_path_fns: Vec<BuildProjectItemForPathFn>,
 }
 
 impl ProjectItemRegistry {
     fn register<T: ProjectItem>(&mut self) {
-        self.build_project_item_fns_by_type.insert(
-            TypeId::of::<T::Item>(),
-            |item, project, pane, window, cx| {
-                let item = item.downcast().unwrap();
-                Box::new(cx.new(|cx| T::for_project_item(project, pane, item, window, cx)))
-                    as Box<dyn ItemHandle>
-            },
-        );
         self.build_project_item_for_path_fns
             .push(|project, project_path, window, cx| {
                 let project_path = project_path.clone();
@@ -922,20 +910,6 @@ impl ProjectItemRegistry {
             return Task::ready(Err(anyhow!("cannot open file {:?}", path.path)));
         };
         open_project_item
-    }
-
-    fn build_item<T: project::ProjectItem>(
-        &self,
-        item: Entity<T>,
-        project: Entity<Project>,
-        pane: Option<&Pane>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<Box<dyn ItemHandle>> {
-        let build = self
-            .build_project_item_fns_by_type
-            .get(&TypeId::of::<T>())?;
-        Some(build(item.into_any(), project, pane, window, cx))
     }
 }
 
@@ -1609,10 +1583,6 @@ impl Workspace {
                             })
                         },
                     );
-                }
-
-                project::Event::AgentLocationChanged => {
-                    this.handle_agent_location_changed(window, cx)
                 }
 
                 _ => {}
@@ -5887,6 +5857,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<Task<Result<()>>> {
         let leader_id = leader_id.into();
+        let CollaboratorId::PeerId(leader_peer_id) = leader_id else {
+            return None;
+        };
         let pane = self.active_pane().clone();
 
         self.last_leaders_by_pane
@@ -5905,43 +5878,35 @@ impl Workspace {
         );
         cx.notify();
 
-        match leader_id {
-            CollaboratorId::PeerId(leader_peer_id) => {
-                let room_id = self.active_call()?.room_id(cx)?;
-                let project_id = self.project.read(cx).remote_id();
-                let request = self.app_state.client.request(proto::Follow {
-                    room_id,
-                    project_id,
-                    leader_id: Some(leader_peer_id),
-                });
+        let room_id = self.active_call()?.room_id(cx)?;
+        let project_id = self.project.read(cx).remote_id();
+        let request = self.app_state.client.request(proto::Follow {
+            room_id,
+            project_id,
+            leader_id: Some(leader_peer_id),
+        });
 
-                Some(cx.spawn_in(window, async move |this, cx| {
-                    let response = request.await?;
-                    this.update(cx, |this, _| {
-                        let state = this
-                            .follower_states
-                            .get_mut(&leader_id)
-                            .context("following interrupted")?;
-                        state.active_view_id = response
-                            .active_view
-                            .as_ref()
-                            .and_then(|view| ViewId::from_proto(view.id.clone()?).ok());
-                        anyhow::Ok(())
-                    })??;
-                    if let Some(view) = response.active_view {
-                        Self::add_view_from_leader(this.clone(), leader_peer_id, &view, cx).await?;
-                    }
-                    this.update_in(cx, |this, window, cx| {
-                        this.leader_updated(leader_id, window, cx)
-                    })?;
-                    Ok(())
-                }))
+        Some(cx.spawn_in(window, async move |this, cx| {
+            let response = request.await?;
+            this.update(cx, |this, _| {
+                let state = this
+                    .follower_states
+                    .get_mut(&leader_id)
+                    .context("following interrupted")?;
+                state.active_view_id = response
+                    .active_view
+                    .as_ref()
+                    .and_then(|view| ViewId::from_proto(view.id.clone()?).ok());
+                anyhow::Ok(())
+            })??;
+            if let Some(view) = response.active_view {
+                Self::add_view_from_leader(this.clone(), leader_peer_id, &view, cx).await?;
             }
-            CollaboratorId::Agent => {
-                self.leader_updated(leader_id, window, cx)?;
-                Some(Task::ready(Ok(())))
-            }
-        }
+            this.update_in(cx, |this, window, cx| {
+                this.leader_updated(leader_id, window, cx)
+            })?;
+            Ok(())
+        }))
     }
 
     pub fn follow_next_collaborator(
@@ -5962,15 +5927,14 @@ impl Workspace {
         } else if let Some(last_leader_id) =
             self.last_leaders_by_pane.get(&self.active_pane.downgrade())
         {
-            match last_leader_id {
-                CollaboratorId::PeerId(peer_id) => {
-                    if collaborators.contains_key(peer_id) {
-                        Some(*last_leader_id)
-                    } else {
-                        None
-                    }
+            if let CollaboratorId::PeerId(peer_id) = last_leader_id {
+                if collaborators.contains_key(peer_id) {
+                    Some(*last_leader_id)
+                } else {
+                    None
                 }
-                CollaboratorId::Agent => Some(CollaboratorId::Agent),
+            } else {
+                None
             }
         } else {
             None
@@ -5999,47 +5963,47 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let leader_id = leader_id.into();
+        let CollaboratorId::PeerId(peer_id) = leader_id else {
+            return;
+        };
 
-        if let CollaboratorId::PeerId(peer_id) = leader_id {
-            let Some(active_call) = GlobalAnyActiveCall::try_global(cx) else {
-                return;
-            };
-            let Some(remote_participant) =
-                active_call.0.remote_participant_for_peer_id(peer_id, cx)
-            else {
-                return;
-            };
+        let Some(active_call) = GlobalAnyActiveCall::try_global(cx) else {
+            return;
+        };
+        let Some(remote_participant) = active_call.0.remote_participant_for_peer_id(peer_id, cx)
+        else {
+            return;
+        };
 
-            let project = self.project.read(cx);
+        let project = self.project.read(cx);
 
-            let other_project_id = match remote_participant.location {
-                ParticipantLocation::External => None,
-                ParticipantLocation::UnsharedProject => None,
-                ParticipantLocation::SharedProject { project_id } => {
-                    if Some(project_id) == project.remote_id() {
-                        None
-                    } else {
-                        Some(project_id)
-                    }
+        let other_project_id = match remote_participant.location {
+            ParticipantLocation::External => None,
+            ParticipantLocation::UnsharedProject => None,
+            ParticipantLocation::SharedProject { project_id } => {
+                if Some(project_id) == project.remote_id() {
+                    None
+                } else {
+                    Some(project_id)
                 }
-            };
-
-            // if they are active in another project, follow there.
-            if let Some(project_id) = other_project_id {
-                let app_state = self.app_state.clone();
-                crate::join_in_room_project(
-                    project_id,
-                    remote_participant.user.legacy_id,
-                    app_state,
-                    cx,
-                )
-                .detach_and_prompt_err(
-                    "Failed to join project",
-                    window,
-                    cx,
-                    |error, _, _| Some(format!("{error:#}")),
-                );
             }
+        };
+
+        // if they are active in another project, follow there.
+        if let Some(project_id) = other_project_id {
+            let app_state = self.app_state.clone();
+            crate::join_in_room_project(
+                project_id,
+                remote_participant.user.legacy_id,
+                app_state,
+                cx,
+            )
+            .detach_and_prompt_err(
+                "Failed to join project",
+                window,
+                cx,
+                |error, _, _| Some(format!("{error:#}")),
+            );
         }
 
         // if you're already following, find the right pane and focus it.
@@ -6311,10 +6275,12 @@ impl Workspace {
         let leader_id = self
             .pane_for(&*item)
             .and_then(|pane| self.leader_for_pane(&pane));
-        let leader_peer_id = match leader_id {
-            Some(CollaboratorId::PeerId(peer_id)) => Some(peer_id),
-            Some(CollaboratorId::Agent) | None => None,
-        };
+        let leader_peer_id = leader_id.and_then(|leader_id| {
+            let CollaboratorId::PeerId(peer_id) = leader_id else {
+                return None;
+            };
+            Some(peer_id)
+        });
 
         let item_handle = item.to_followable_item_handle(cx)?;
         let id = item_handle.remote_id(&self.app_state.client, window, cx)?;
@@ -6530,69 +6496,6 @@ impl Workspace {
         Ok(())
     }
 
-    fn handle_agent_location_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(follower_state) = self.follower_states.get_mut(&CollaboratorId::Agent) else {
-            return;
-        };
-
-        if let Some(agent_location) = self.project.read(cx).agent_location() {
-            let buffer_entity_id = agent_location.buffer.entity_id();
-            let view_id = ViewId {
-                creator: CollaboratorId::Agent,
-                id: buffer_entity_id.as_u64(),
-            };
-            follower_state.active_view_id = Some(view_id);
-
-            let item = match follower_state.items_by_leader_view_id.entry(view_id) {
-                hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
-                hash_map::Entry::Vacant(entry) => {
-                    let existing_view =
-                        follower_state
-                            .center_pane
-                            .read(cx)
-                            .items()
-                            .find_map(|item| {
-                                let item = item.to_followable_item_handle(cx)?;
-                                if item.buffer_kind(cx) == ItemBufferKind::Singleton
-                                    && item.project_item_model_ids(cx).as_slice()
-                                        == [buffer_entity_id]
-                                {
-                                    Some(item)
-                                } else {
-                                    None
-                                }
-                            });
-                    let view = existing_view.or_else(|| {
-                        agent_location.buffer.upgrade().and_then(|buffer| {
-                            cx.update_default_global(|registry: &mut ProjectItemRegistry, cx| {
-                                registry.build_item(buffer, self.project.clone(), None, window, cx)
-                            })?
-                            .to_followable_item_handle(cx)
-                        })
-                    });
-
-                    view.map(|view| {
-                        entry.insert(FollowerView {
-                            view,
-                            location: None,
-                        })
-                    })
-                }
-            };
-
-            if let Some(item) = item {
-                item.view
-                    .set_leader_id(Some(CollaboratorId::Agent), window, cx);
-                item.view
-                    .update_agent_location(agent_location.position, window, cx);
-            }
-        } else {
-            follower_state.active_view_id = None;
-        }
-
-        self.leader_updated(CollaboratorId::Agent, window, cx);
-    }
-
     pub fn update_active_view_for_followers(&mut self, window: &mut Window, cx: &mut App) {
         let mut is_project_item = true;
         let mut update = proto::UpdateActiveView::default();
@@ -6605,10 +6508,12 @@ impl Workspace {
                 let leader_id = self
                     .pane_for(&*item)
                     .and_then(|pane| self.leader_for_pane(&pane));
-                let leader_peer_id = match leader_id {
-                    Some(CollaboratorId::PeerId(peer_id)) => Some(peer_id),
-                    Some(CollaboratorId::Agent) | None => None,
-                };
+                let leader_peer_id = leader_id.and_then(|leader_id| {
+                    let CollaboratorId::PeerId(peer_id) = leader_id else {
+                        return None;
+                    };
+                    Some(peer_id)
+                });
 
                 if let Some(item) = item.to_followable_item_handle(cx) {
                     let id = item
@@ -6709,10 +6614,10 @@ impl Workspace {
         cx.notify();
 
         let leader_id = leader_id.into();
-        let (panel_id, item) = match leader_id {
-            CollaboratorId::PeerId(peer_id) => self.active_item_for_peer(peer_id, window, cx)?,
-            CollaboratorId::Agent => (None, self.active_item_for_agent()?),
+        let CollaboratorId::PeerId(peer_id) = leader_id else {
+            return None;
         };
+        let (panel_id, item) = self.active_item_for_peer(peer_id, window, cx)?;
 
         let state = self.follower_states.get(&leader_id)?;
         let mut transfer_focus = state.center_pane.read(cx).has_focus(window, cx);
@@ -6745,18 +6650,6 @@ impl Workspace {
         });
 
         Some(item)
-    }
-
-    fn active_item_for_agent(&self) -> Option<Box<dyn ItemHandle>> {
-        let state = self.follower_states.get(&CollaboratorId::Agent)?;
-        let active_view_id = state.active_view_id?;
-        Some(
-            state
-                .items_by_leader_view_id
-                .get(&active_view_id)?
-                .view
-                .boxed_clone(),
-        )
     }
 
     fn active_item_for_peer(
@@ -8363,19 +8256,17 @@ fn leader_border_for_pane(
         }
     })?;
 
-    let mut leader_color = match leader_id {
-        CollaboratorId::PeerId(leader_peer_id) => {
-            let leader = GlobalAnyActiveCall::try_global(cx)?
-                .0
-                .remote_participant_for_peer_id(leader_peer_id, cx)?;
-
-            cx.theme()
-                .players()
-                .color_for_participant(leader.participant_index.0)
-                .cursor
-        }
-        CollaboratorId::Agent => cx.theme().players().agent().cursor,
+    let CollaboratorId::PeerId(leader_peer_id) = leader_id else {
+        return None;
     };
+    let leader = GlobalAnyActiveCall::try_global(cx)?
+        .0
+        .remote_participant_for_peer_id(leader_peer_id, cx)?;
+    let mut leader_color = cx
+        .theme()
+        .players()
+        .color_for_participant(leader.participant_index.0)
+        .cursor;
     leader_color.fade_out(0.3);
     Some(
         div()

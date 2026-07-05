@@ -1,7 +1,6 @@
 use crate::DEFAULT_THREAD_TITLE;
 use crate::SendImmediately;
 use crate::{
-    ChatWithFollow,
     completion_provider::{
         AgentContextSelection, AvailableCommand, AvailableSkill, PromptCompletionProvider,
         PromptCompletionProviderDelegate, PromptContextAction, PromptContextType,
@@ -42,7 +41,7 @@ use theme_settings::ThemeSettings;
 use ui::{ContextMenu, prelude::*};
 use util::paths::PathStyle;
 use util::{ResultExt, debug_panic};
-use workspace::{CollaboratorId, Workspace};
+use workspace::Workspace;
 use zed_actions::agent::{Chat, PasteRaw};
 
 #[derive(Default)]
@@ -986,21 +985,6 @@ impl MessageEditor {
         });
 
         cx.emit(MessageEditorEvent::SendImmediately)
-    }
-
-    fn chat_with_follow(
-        &mut self,
-        _: &ChatWithFollow,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.workspace
-            .update(cx, |this, cx| {
-                this.follow(CollaboratorId::Agent, window, cx)
-            })
-            .log_err();
-
-        self.send(cx);
     }
 
     fn cancel(&mut self, _: &editor::actions::Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -1974,7 +1958,6 @@ impl Render for MessageEditor {
             .key_context("MessageEditor")
             .on_action(cx.listener(Self::chat))
             .on_action(cx.listener(Self::send_immediately))
-            .on_action(cx.listener(Self::chat_with_follow))
             .on_action(cx.listener(Self::cancel))
             .capture_action(cx.listener(Self::copy))
             .capture_action(cx.listener(Self::cut))

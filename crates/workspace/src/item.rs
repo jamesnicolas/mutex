@@ -846,27 +846,19 @@ impl<T: Item> ItemHandle for Entity<T> {
                         }
 
                         if item.item_focus_handle(cx).contains_focused(window, cx) {
-                            match leader_id {
-                                Some(CollaboratorId::Agent) => {}
-                                Some(CollaboratorId::PeerId(leader_peer_id)) => {
-                                    item.add_event_to_update_proto(
-                                        event,
-                                        &mut pending_update.borrow_mut(),
-                                        window,
-                                        cx,
-                                    );
-                                    pending_update_tx.unbounded_send(Some(leader_peer_id)).ok();
-                                }
-                                None => {
-                                    item.add_event_to_update_proto(
-                                        event,
-                                        &mut pending_update.borrow_mut(),
-                                        window,
-                                        cx,
-                                    );
-                                    pending_update_tx.unbounded_send(None).ok();
-                                }
-                            }
+                            let leader_peer_id =
+                                if let Some(CollaboratorId::PeerId(peer_id)) = leader_id {
+                                    Some(peer_id)
+                                } else {
+                                    None
+                                };
+                            item.add_event_to_update_proto(
+                                event,
+                                &mut pending_update.borrow_mut(),
+                                window,
+                                cx,
+                            );
+                            pending_update_tx.unbounded_send(leader_peer_id).ok();
                         }
                     }
 
@@ -1295,13 +1287,6 @@ pub trait FollowableItem: Item {
         cx: &mut Context<Self>,
     );
     fn dedup(&self, existing: &Self, window: &Window, cx: &App) -> Option<Dedup>;
-    fn update_agent_location(
-        &mut self,
-        _location: language::Anchor,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
-    }
 }
 
 pub trait FollowableItemHandle: ItemHandle {
@@ -1336,7 +1321,6 @@ pub trait FollowableItemHandle: ItemHandle {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Dedup>;
-    fn update_agent_location(&self, location: language::Anchor, window: &mut Window, cx: &mut App);
 }
 
 impl<T: FollowableItem> FollowableItemHandle for Entity<T> {
@@ -1405,12 +1389,6 @@ impl<T: FollowableItem> FollowableItemHandle for Entity<T> {
     ) -> Option<Dedup> {
         let existing = existing.to_any_view().downcast::<T>().ok()?;
         self.read(cx).dedup(existing.read(cx), window, cx)
-    }
-
-    fn update_agent_location(&self, location: language::Anchor, window: &mut Window, cx: &mut App) {
-        self.update(cx, |this, cx| {
-            this.update_agent_location(location, window, cx)
-        })
     }
 }
 
