@@ -840,6 +840,97 @@ pub enum ThreadEvent {
     Stop(acp::StopReason),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerializableThreadEvent {
+    pub variant: String,
+    pub payload: Option<serde_json::Value>,
+    pub debug: String,
+}
+
+impl SerializableThreadEvent {
+    pub fn from_thread_event(event: &ThreadEvent) -> Self {
+        fn payload(value: &impl Serialize) -> Option<serde_json::Value> {
+            serde_json::to_value(value).log_err()
+        }
+
+        let variant = match event {
+            ThreadEvent::UserMessage(_) => "user_message",
+            ThreadEvent::AgentText(_) => "agent_text",
+            ThreadEvent::AgentThinking(_) => "agent_thinking",
+            ThreadEvent::ToolCall(_) => "tool_call",
+            ThreadEvent::ToolCallUpdate(_) => "tool_call_update",
+            ThreadEvent::ToolCallAuthorization(_) => "tool_call_authorization",
+            ThreadEvent::ToolCallAuthorizationResolved { .. } => "tool_call_authorization_resolved",
+            ThreadEvent::SubagentSpawned(_) => "subagent_spawned",
+            ThreadEvent::Retry(_) => "retry",
+            ThreadEvent::ContextCompaction(_) => "context_compaction",
+            ThreadEvent::ContextCompactionUpdate(_) => "context_compaction_update",
+            ThreadEvent::Stop(_) => "stop",
+        };
+
+        let payload = match event {
+            ThreadEvent::UserMessage(message) => payload(message),
+            ThreadEvent::AgentText(text) | ThreadEvent::AgentThinking(text) => {
+                Some(serde_json::json!({ "text": text }))
+            }
+            ThreadEvent::ToolCall(tool_call) => payload(tool_call),
+            ThreadEvent::ToolCallUpdate(update) => match update {
+                acp_thread::ToolCallUpdate::UpdateFields(update) => payload(update),
+                acp_thread::ToolCallUpdate::UpdateDiff(diff) => Some(
+                    serde_json::json!({ "tool_call_id": format!("{:?}", diff.id), "kind": "diff" }),
+                ),
+                acp_thread::ToolCallUpdate::UpdateTerminal(terminal) => Some(
+                    serde_json::json!({ "tool_call_id": format!("{:?}", terminal.id), "kind": "terminal" }),
+                ),
+            },
+            ThreadEvent::ToolCallAuthorization(authorization) => Some(serde_json::json!({
+                "tool_call": authorization.tool_call,
+                "options": format!("{:?}", authorization.options),
+                "kind": format!("{:?}", authorization.kind),
+                "context": authorization.context.as_ref().map(|context| serde_json::json!({
+                    "tool_name": context.tool_name,
+                    "input_values": context.input_values,
+                    "scope": format!("{:?}", context.scope),
+                })),
+            })),
+            ThreadEvent::ToolCallAuthorizationResolved {
+                tool_call_id,
+                outcome,
+            } => Some(serde_json::json!({
+                "tool_call_id": format!("{tool_call_id:?}"),
+                "option_id": format!("{:?}", outcome.option_id),
+                "option_kind": format!("{:?}", outcome.option_kind),
+            })),
+            ThreadEvent::SubagentSpawned(session_id) => {
+                Some(serde_json::json!({ "session_id": session_id.0.to_string() }))
+            }
+            ThreadEvent::Retry(status) => Some(serde_json::json!({
+                "last_error": status.last_error.to_string(),
+                "attempt": status.attempt,
+                "max_attempts": status.max_attempts,
+                "duration_ms": status.duration.as_millis(),
+                "meta": status.meta,
+            })),
+            ThreadEvent::ContextCompaction(compaction) => Some(serde_json::json!({
+                "id": compaction.id.0.to_string(),
+                "status": format!("{:?}", compaction.status),
+            })),
+            ThreadEvent::ContextCompactionUpdate(update) => Some(serde_json::json!({
+                "id": update.id.0.to_string(),
+                "summary_delta": update.summary_delta,
+                "status": update.status.map(|status| format!("{status:?}")),
+            })),
+            ThreadEvent::Stop(stop_reason) => payload(stop_reason),
+        };
+
+        Self {
+            variant: variant.to_string(),
+            payload,
+            debug: format!("{event:?}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct NewTerminal {
     pub command: String,

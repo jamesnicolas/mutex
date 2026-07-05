@@ -136,3 +136,36 @@ message AgentThreadRemoved {
   uint64 project_id = 1;
   string thread_id = 2;
 }
+
+message UpdateAgentCredentials {
+  string access_token = 1;
+  string refresh_token = 2;
+  optional uint64 expires_at_ms = 3;
+  optional string account_id = 4;
+  optional string email = 5;
+}
+
+message AgentCredentialsUpdated {
+  string access_token = 1;
+  string refresh_token = 2;
+  optional uint64 expires_at_ms = 3;
+  optional string account_id = 4;
+  optional string email = 5;
+}
+
+message CreateAgentSession {
+  AgentThreadMetadata thread_metadata = 1;
+}
+
+message CreateAgentSessionResponse {
+  string session_id = 1;
+}
+
+message AgentSessionPrompt {
+  string session_id = 1;
+  string prompt_markdown = 2;
+}
+
+message AgentSessionCancel {
+  string session_id = 1;
+}

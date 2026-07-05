@@ -468,6 +468,28 @@ impl AnyProtoClient {
             )
     }
 
+    pub fn add_message_handler<M, E, H, F>(&self, entity: gpui::WeakEntity<E>, handler: H)
+    where
+        M: EnvelopedMessage,
+        E: 'static,
+        H: 'static + Sync + Fn(Entity<E>, TypedEnvelope<M>, AsyncApp) -> F + Send + Sync,
+        F: 'static + Future<Output = Result<()>>,
+    {
+        self.0
+            .client
+            .message_handler_set()
+            .lock()
+            .add_message_handler(
+                TypeId::of::<M>(),
+                entity.into(),
+                Arc::new(move |entity, envelope, _, cx| {
+                    let entity = entity.downcast::<E>().unwrap();
+                    let envelope = envelope.into_any().downcast::<TypedEnvelope<M>>().unwrap();
+                    handler(entity, *envelope, cx).boxed_local()
+                }),
+            )
+    }
+
     pub fn add_entity_request_handler<M, E, H, F>(&self, handler: H)
     where
         M: EnvelopedMessage + RequestMessage + EntityMessage,

@@ -2117,6 +2117,65 @@ impl NativeAgentConnection {
             .update(cx, |this, cx| this.load_thread(id, project, cx))
     }
 
+    pub fn new_headless_session(&self, project: Entity<Project>, cx: &mut App) -> acp::SessionId {
+        let acp_thread = self
+            .0
+            .update(cx, |agent, cx| agent.new_session(project, cx));
+        acp_thread.read(cx).session_id().clone()
+    }
+
+    pub fn prompt_headless(
+        &self,
+        session_id: acp::SessionId,
+        prompt_markdown: String,
+        on_event: impl FnMut(SerializableThreadEvent) + 'static,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let Some((thread, acp_thread)) = self.0.update(cx, |agent, _cx| {
+            agent
+                .sessions
+                .get(&session_id)
+                .map(|session| (session.thread.clone(), session.acp_thread.clone()))
+        }) else {
+            log::error!("Session not found in prompt_headless: {}", session_id);
+            return Task::ready(Err(anyhow!("Session not found")));
+        };
+
+        let user_message_id = acp_thread::UserMessageId::new();
+        let response_stream = thread.update(cx, |thread, cx| {
+            thread.send(
+                user_message_id,
+                [UserMessageContent::Text(prompt_markdown)],
+                cx,
+            )
+        });
+        let response_stream = match response_stream {
+            Ok(response_stream) => response_stream,
+            Err(error) => return Task::ready(Err(error)),
+        };
+
+        Self::handle_thread_events_inner(
+            response_stream,
+            Some(acp_thread.downgrade()),
+            Some(self.clone()),
+            ThreadEventAuthorizationMode::AutoDeny,
+            on_event,
+            cx,
+        )
+    }
+
+    pub fn cancel_headless(&self, session_id: &acp::SessionId, cx: &mut App) {
+        log::info!("Cancelling headless session: {}", session_id);
+        self.0.update(cx, |agent, cx| {
+            if let Some(session) = agent.sessions.get(session_id) {
+                session
+                    .thread
+                    .update(cx, |thread, cx| thread.cancel(cx))
+                    .detach();
+            }
+        });
+    }
+
     fn run_turn(
         &self,
         session_id: acp::SessionId,
@@ -2148,9 +2207,27 @@ impl NativeAgentConnection {
     }
 
     fn handle_thread_events(
-        mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
+        events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
         acp_thread: WeakEntity<AcpThread>,
         connection: Option<NativeAgentConnection>,
+        cx: &App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        Self::handle_thread_events_inner(
+            events,
+            Some(acp_thread),
+            connection,
+            ThreadEventAuthorizationMode::RequestFromAcpThread,
+            |_| {},
+            cx,
+        )
+    }
+
+    fn handle_thread_events_inner(
+        mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
+        acp_thread: Option<WeakEntity<AcpThread>>,
+        connection: Option<NativeAgentConnection>,
+        authorization_mode: ThreadEventAuthorizationMode,
+        mut on_event: impl FnMut(SerializableThreadEvent) + 'static,
         cx: &App,
     ) -> Task<Result<acp::PromptResponse>> {
         cx.spawn(async move |cx| {
@@ -2159,9 +2236,13 @@ impl NativeAgentConnection {
                 match result {
                     Ok(event) => {
                         log::trace!("Received completion event: {:?}", event);
+                        on_event(SerializableThreadEvent::from_thread_event(&event));
 
                         match event {
                             ThreadEvent::UserMessage(message) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     for content in &*message.content {
                                         thread.push_user_content_block(
@@ -2173,11 +2254,17 @@ impl NativeAgentConnection {
                                 })?;
                             }
                             ThreadEvent::AgentText(text) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.push_assistant_content_block(text.into(), false, cx)
                                 })?;
                             }
                             ThreadEvent::AgentThinking(text) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.push_assistant_content_block(text.into(), true, cx)
                                 })?;
@@ -2188,45 +2275,70 @@ impl NativeAgentConnection {
                                 response,
                                 context: _,
                                 kind,
-                            }) => {
-                                let outcome_task = acp_thread.update(cx, |thread, cx| {
-                                    thread.request_tool_call_authorization(
-                                        tool_call, options, kind, cx,
-                                    )
-                                })??;
-                                cx.background_spawn(async move {
-                                    if let acp_thread::RequestPermissionOutcome::Selected(outcome) =
-                                        outcome_task.await
-                                    {
-                                        response
-                                            .send(outcome)
-                                            .map_err(|_| {
-                                                anyhow!("authorization receiver was dropped")
-                                            })
-                                            .log_err();
-                                    }
-                                })
-                                .detach();
-                            }
+                            }) => match authorization_mode {
+                                ThreadEventAuthorizationMode::RequestFromAcpThread => {
+                                    let acp_thread = acp_thread
+                                        .as_ref()
+                                        .context("missing AcpThread for authorization")?;
+                                    let outcome_task = acp_thread.update(cx, |thread, cx| {
+                                        thread.request_tool_call_authorization(
+                                            tool_call, options, kind, cx,
+                                        )
+                                    })??;
+                                    cx.background_spawn(async move {
+                                        if let acp_thread::RequestPermissionOutcome::Selected(
+                                            outcome,
+                                        ) = outcome_task.await
+                                        {
+                                            response
+                                                .send(outcome)
+                                                .map_err(|_| {
+                                                    anyhow!("authorization receiver was dropped")
+                                                })
+                                                .log_err();
+                                        }
+                                    })
+                                    .detach();
+                                }
+                                ThreadEventAuthorizationMode::AutoDeny => {
+                                    let outcome = auto_deny_permission_outcome(&options)?;
+                                    response
+                                        .send(outcome)
+                                        .map_err(|_| anyhow!("authorization receiver was dropped"))
+                                        .log_err();
+                                }
+                            },
                             ThreadEvent::ToolCallAuthorizationResolved {
                                 tool_call_id,
                                 outcome,
                             } => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.authorize_tool_call(tool_call_id, outcome, cx);
                                 })?;
                             }
                             ThreadEvent::ToolCall(tool_call) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.upsert_tool_call(tool_call, cx)
                                 })??;
                             }
                             ThreadEvent::ToolCallUpdate(update) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.update_tool_call(update, cx)
                                 })??;
                             }
                             ThreadEvent::SubagentSpawned(session_id) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.subagent_spawned(session_id, cx);
                                 })?;
@@ -2243,16 +2355,25 @@ impl NativeAgentConnection {
                                         });
                                     }
                                 }
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.update_retry_status(status, cx)
                                 })?;
                             }
                             ThreadEvent::ContextCompaction(compaction) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.push_context_compaction(compaction, cx);
                                 })?;
                             }
                             ThreadEvent::ContextCompactionUpdate(update) => {
+                                let Some(acp_thread) = acp_thread.as_ref() else {
+                                    continue;
+                                };
                                 acp_thread.update(cx, |thread, cx| {
                                     thread.update_context_compaction(update, cx);
                                 })?;
@@ -2274,6 +2395,26 @@ impl NativeAgentConnection {
             anyhow::Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
         })
     }
+}
+
+#[derive(Clone, Copy)]
+enum ThreadEventAuthorizationMode {
+    RequestFromAcpThread,
+    AutoDeny,
+}
+
+fn auto_deny_permission_outcome(
+    options: &acp_thread::PermissionOptions,
+) -> Result<acp_thread::SelectedPermissionOutcome> {
+    let option = options
+        .first_option_of_kind(acp::PermissionOptionKind::RejectOnce)
+        .or_else(|| options.first_option_of_kind(acp::PermissionOptionKind::RejectAlways))
+        .context("permission prompt has no reject option")?;
+
+    Ok(acp_thread::SelectedPermissionOutcome::new(
+        option.option_id.clone(),
+        option.kind,
+    ))
 }
 
 struct Command<'a> {

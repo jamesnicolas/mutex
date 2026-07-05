@@ -10,7 +10,11 @@ use agent::{
 use client::{Client, UserStore};
 use clock::FakeSystemClock;
 use collections::{HashMap, HashSet};
-use language_model::{LanguageModelRegistry, LanguageModelToolResultContent};
+use language_model::{
+    LanguageModel, LanguageModelProvider, LanguageModelRegistry, LanguageModelToolResultContent,
+    SelectedModel,
+    fake_provider::{FakeLanguageModel, FakeLanguageModelProvider},
+};
 use languages::rust_lang;
 
 use extension::ExtensionHostProxy;
@@ -2551,6 +2555,184 @@ async fn test_adding_remote_skill(cx: &mut TestAppContext, server_cx: &mut TestA
 }
 
 #[gpui::test]
+async fn test_native_agent_turn_runs_in_remote_server(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    let fs = FakeFs::new(server_cx.executor());
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            ".git": {},
+            "README.md": "remote agent test",
+        }),
+    )
+    .await;
+
+    let (_project, headless, ssh) = init_test_with_remote_client(&fs, cx, server_cx).await;
+    let fake_model = Arc::new(FakeLanguageModel::default());
+    server_cx.update(|cx| {
+        let fake_provider = Arc::new(
+            FakeLanguageModelProvider::default()
+                .with_models(vec![fake_model.clone() as Arc<dyn LanguageModel>]),
+        );
+        let selected = SelectedModel {
+            provider: fake_provider.id(),
+            model: fake_model.id(),
+        };
+        LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
+            registry.register_provider(fake_provider, cx);
+            registry.select_default_model(Some(&selected), cx);
+        });
+    });
+    server_cx.run_until_parked();
+
+    headless.update(server_cx, |headless, cx| {
+        assert!(
+            !headless.agent_session_host.read(cx).has_lazy_project(),
+            "agent Project::local should be lazy"
+        );
+    });
+
+    let proto_client = ssh.update(cx, |ssh, _cx| ssh.proto_client());
+    proto_client
+        .request(proto::UpdateAgentCredentials {
+            access_token: "fake-access-token".into(),
+            refresh_token: "fake-refresh-token".into(),
+            expires_at_ms: Some(u64::MAX / 2),
+            account_id: Some("fake-account".into()),
+            email: Some("fake@example.com".into()),
+        })
+        .await
+        .unwrap();
+    headless.update(server_cx, |headless, cx| {
+        assert!(
+            headless
+                .agent_session_host
+                .read(cx)
+                .has_forwarded_credentials()
+        );
+    });
+
+    let paths = PathList::new(&[Path::new(path!("/project"))]).serialize();
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    let create_response = proto_client
+        .request(proto::CreateAgentSession {
+            thread_metadata: Some(proto::AgentThreadMetadata {
+                thread_id: thread_id.clone(),
+                session_id: None,
+                agent_id: "Mutex Agent".into(),
+                title: Some("Server-side turn".into()),
+                title_override: None,
+                parallel_attempt_group: None,
+                landed: None,
+                updated_at_millis: 1,
+                created_at_millis: Some(1),
+                interacted_at_millis: None,
+                folder_paths: Some(proto::AgentThreadPathList {
+                    paths: paths.paths.clone(),
+                    order: paths.order.clone(),
+                }),
+                main_worktree_paths: Some(proto::AgentThreadPathList {
+                    paths: paths.paths,
+                    order: paths.order,
+                }),
+                remote_connection_json: None,
+                archived: false,
+            }),
+        })
+        .await
+        .unwrap();
+    let session_id = create_response.session_id;
+
+    headless.update(server_cx, |headless, cx| {
+        let host = headless.agent_session_host.read(cx);
+        assert!(host.has_lazy_project());
+        assert!(
+            host.session_thread(&agent_client_protocol::schema::v1::SessionId::new(
+                session_id.clone()
+            ))
+            .is_some()
+        );
+    });
+
+    let registry = proto_client
+        .request(proto::ListAgentThreads {
+            project_id: proto::REMOTE_SERVER_PROJECT_ID,
+        })
+        .await
+        .unwrap();
+    assert!(registry.threads.iter().any(|thread| {
+        thread.thread_id == thread_id && thread.session_id.as_deref() == Some(session_id.as_str())
+    }));
+
+    proto_client
+        .request(proto::AgentSessionPrompt {
+            session_id: session_id.clone(),
+            prompt_markdown: "Say hello from the remote server".into(),
+        })
+        .await
+        .unwrap();
+    server_cx.run_until_parked();
+    headless.update(server_cx, |headless, cx| {
+        assert_eq!(headless.agent_session_host.read(cx).running_turn_count(), 1);
+    });
+
+    assert_eq!(fake_model.completion_count(), 1);
+    let request = fake_model
+        .pending_completions()
+        .last()
+        .cloned()
+        .expect("server-side model request");
+    fake_model.send_completion_stream_text_chunk(&request, "server-side answer");
+    fake_model.end_completion_stream(&request);
+
+    for _ in 0..5 {
+        server_cx.run_until_parked();
+        let finished = headless.update(server_cx, |headless, cx| {
+            let host = headless.agent_session_host.read(cx);
+            host.running_turn_count() == 0
+                && host
+                    .buffered_events(&agent_client_protocol::schema::v1::SessionId::new(
+                        session_id.clone(),
+                    ))
+                    .iter()
+                    .any(|event| event.event.variant == "stop")
+        });
+        if finished {
+            break;
+        }
+    }
+
+    let events = headless.update(server_cx, |headless, cx| {
+        headless.agent_session_host.read(cx).buffered_events(
+            &agent_client_protocol::schema::v1::SessionId::new(session_id.clone()),
+        )
+    });
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (0..events.len() as u64).collect::<Vec<_>>()
+    );
+    assert!(events.iter().any(|event| {
+        event.event.variant == "agent_text"
+            && event
+                .event
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("text"))
+                .and_then(|text| text.as_str())
+                == Some("server-side answer")
+    }));
+    assert!(events.iter().any(|event| event.event.variant == "stop"));
+    headless.update(server_cx, |headless, cx| {
+        assert_eq!(headless.agent_session_host.read(cx).running_turn_count(), 0);
+    });
+}
+
+#[gpui::test]
 async fn test_remote_external_agent_server(
     cx: &mut TestAppContext,
     server_cx: &mut TestAppContext,
@@ -2890,6 +3072,19 @@ pub async fn init_test(
     cx: &mut TestAppContext,
     server_cx: &mut TestAppContext,
 ) -> (Entity<Project>, Entity<HeadlessProject>) {
+    let (project, headless, _) = init_test_with_remote_client(server_fs, cx, server_cx).await;
+    (project, headless)
+}
+
+async fn init_test_with_remote_client(
+    server_fs: &Arc<FakeFs>,
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) -> (
+    Entity<Project>,
+    Entity<HeadlessProject>,
+    Entity<RemoteClient>,
+) {
     let server_fs = server_fs.clone();
     cx.update(|cx| {
         release_channel::init(semver::Version::new(0, 0, 0), cx);
@@ -2915,6 +3110,7 @@ pub async fn init_test(
                 languages,
                 extension_host_proxy: proxy,
                 startup_time: std::time::Instant::now(),
+                agent_turn_activity: crate::AgentTurnActivity::default(),
             },
             false,
             cx,
@@ -2922,14 +3118,14 @@ pub async fn init_test(
     });
 
     let ssh = RemoteClient::connect_mock(opts, cx).await;
-    let project = build_project(ssh, cx);
+    let project = build_project(ssh.clone(), cx);
     project
         .update(cx, {
             let headless = headless.clone();
             |_, cx| cx.on_release(|_, _| drop(headless))
         })
         .detach();
-    (project, headless)
+    (project, headless, ssh)
 }
 
 fn init_logger() {

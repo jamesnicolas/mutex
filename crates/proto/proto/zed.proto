@@ -500,7 +500,13 @@ message Envelope {
     UpsertAgentThread upsert_agent_thread = 465;
     RemoveAgentThread remove_agent_thread = 466;
     AgentThreadUpdated agent_thread_updated = 467;
-    AgentThreadRemoved agent_thread_removed = 468; // current max
+    AgentThreadRemoved agent_thread_removed = 468;
+    UpdateAgentCredentials update_agent_credentials = 469;
+    AgentCredentialsUpdated agent_credentials_updated = 470;
+    CreateAgentSession create_agent_session = 471;
+    CreateAgentSessionResponse create_agent_session_response = 472;
+    AgentSessionPrompt agent_session_prompt = 473;
+    AgentSessionCancel agent_session_cancel = 474; // current max
   }
 
   reserved 87 to 88;

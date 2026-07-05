@@ -1649,6 +1649,8 @@ impl Project {
             remote_proto.add_entity_request_handler(Self::handle_trust_worktrees);
             remote_proto.add_entity_request_handler(Self::handle_restrict_worktrees);
             remote_proto.add_entity_request_handler(Self::handle_find_search_candidates_chunk);
+            remote_proto
+                .add_message_handler(cx.weak_entity(), Self::handle_agent_credentials_updated);
 
             remote_proto.add_entity_message_handler(Self::handle_find_search_candidates_cancel);
             BufferStore::init(&remote_proto);
@@ -5313,6 +5315,18 @@ impl Project {
             });
             Ok(())
         })
+    }
+
+    async fn handle_agent_credentials_updated(
+        _this: Entity<Self>,
+        envelope: TypedEnvelope<proto::AgentCredentialsUpdated>,
+        _cx: AsyncApp,
+    ) -> Result<()> {
+        log::info!(
+            "remote server rotated agent credentials for {:?}; client keychain update deferred",
+            envelope.payload.email
+        );
+        Ok(())
     }
 
     async fn handle_language_server_prompt_request(

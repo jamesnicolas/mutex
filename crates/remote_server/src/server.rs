@@ -1,3 +1,4 @@
+mod agent_session_host;
 mod headless_project;
 
 #[cfg(test)]
@@ -6,6 +7,7 @@ mod remote_editing_tests;
 #[cfg(windows)]
 pub mod windows;
 
+pub use agent_session_host::{AgentSessionHost, AgentTurnActivity};
 pub use headless_project::{HeadlessAppState, HeadlessProject};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -378,6 +380,7 @@ fn start_server(
     log_rx: Receiver<Vec<u8>>,
     cx: &mut App,
     is_wsl_interop: bool,
+    agent_turn_activity: AgentTurnActivity,
 ) -> AnyProtoClient {
     // This is the server idle timeout. If no connection comes in this timeout, the server will shut down.
     const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -414,6 +417,13 @@ fn start_server(
                     anyhow::Ok((stdin_stream, stdout_stream, stderr_stream))
                 }
                 _ = futures::FutureExt::fuse(cx.background_executor().timer(IDLE_TIMEOUT)) => {
+                    if agent_turn_activity.active_turn_count() > 0 {
+                        log::info!(
+                            "suppressing remote server idle exit; {} agent turn(s) still running",
+                            agent_turn_activity.active_turn_count()
+                        );
+                        continue;
+                    }
                     log::warn!("timed out waiting for new connections after {:?}. exiting.", IDLE_TIMEOUT);
                     cx.update(|cx| {
                         // TODO: This is a hack, because in a headless project, shutdown isn't executed
@@ -638,7 +648,14 @@ pub fn execute_run(
         };
 
         log::info!("gpui app started, initializing server");
-        let session = start_server(listeners, log_rx, cx, is_wsl_interop);
+        let agent_turn_activity = AgentTurnActivity::default();
+        let session = start_server(
+            listeners,
+            log_rx,
+            cx,
+            is_wsl_interop,
+            agent_turn_activity.clone(),
+        );
         trusted_worktrees::init(HashMap::default(), cx);
 
         GitHostingProviderRegistry::set_global(git_hosting_provider_registry, cx);
@@ -688,6 +705,7 @@ pub fn execute_run(
                     languages,
                     extension_host_proxy,
                     startup_time,
+                    agent_turn_activity: agent_turn_activity.clone(),
                 },
                 true,
                 cx,

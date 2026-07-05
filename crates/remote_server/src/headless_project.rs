@@ -49,6 +49,8 @@ use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
 use util::{ResultExt, paths::PathStyle, rel_path::RelPath};
 use worktree::Worktree;
 
+use crate::{AgentSessionHost, AgentTurnActivity};
+
 pub struct HeadlessProject {
     pub fs: Arc<dyn Fs>,
     pub session: AnyProtoClient,
@@ -66,6 +68,7 @@ pub struct HeadlessProject {
     pub extensions: Entity<HeadlessExtensionStore>,
     pub git_store: Entity<GitStore>,
     pub thread_registry: Entity<ThreadRegistry>,
+    pub agent_session_host: Entity<AgentSessionHost>,
     pub environment: Entity<ProjectEnvironment>,
     pub profiling_collector: gpui::ProfilingCollector,
     // Used mostly to keep alive the toolchain store for RPC handlers.
@@ -82,6 +85,7 @@ pub struct HeadlessAppState {
     pub languages: Arc<LanguageRegistry>,
     pub extension_host_proxy: Arc<ExtensionHostProxy>,
     pub startup_time: Instant,
+    pub agent_turn_activity: AgentTurnActivity,
 }
 
 impl HeadlessProject {
@@ -99,6 +103,7 @@ impl HeadlessProject {
             languages,
             extension_host_proxy: proxy,
             startup_time,
+            agent_turn_activity,
         }: HeadlessAppState,
         init_worktree_trust: bool,
         cx: &mut Context<Self>,
@@ -254,12 +259,21 @@ impl HeadlessProject {
         });
 
         let thread_registry = cx.new(|cx| {
-            let mut thread_registry = ThreadRegistry::local(
-                paths::remote_server_state_dir().join("agent_threads.json"),
-                cx,
-            );
+            let mut thread_registry = ThreadRegistry::local(agent_threads_registry_path(), cx);
             thread_registry.shared(REMOTE_SERVER_PROJECT_ID, session.clone(), cx);
             thread_registry
+        });
+        let agent_session_host = cx.new(|cx| {
+            AgentSessionHost::new(
+                session.clone(),
+                fs.clone(),
+                http_client.clone(),
+                node_runtime.clone(),
+                languages.clone(),
+                thread_registry.clone(),
+                agent_turn_activity,
+                cx,
+            )
         });
 
         cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
@@ -350,6 +364,7 @@ impl HeadlessProject {
         AgentServerStore::init_headless(&session);
         ContextServerStore::init_headless(&session);
         ThreadRegistry::init(&session);
+        AgentSessionHost::init(&session, &agent_session_host);
 
         HeadlessProject {
             next_entry_id: Default::default(),
@@ -368,6 +383,7 @@ impl HeadlessProject {
             extensions,
             git_store,
             thread_registry,
+            agent_session_host,
             environment,
             profiling_collector: gpui::ProfilingCollector::new(startup_time),
             _toolchain_store: toolchain_store,
@@ -1341,6 +1357,18 @@ impl HeadlessProject {
             .into_iter()
             .collect();
         Ok(proto::DirectoryEnvironment { environment })
+    }
+}
+
+fn agent_threads_registry_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        std::env::temp_dir().join(format!("mutex-agent-threads-{}.json", uuid::Uuid::new_v4()))
+    }
+
+    #[cfg(not(test))]
+    {
+        paths::remote_server_state_dir().join("agent_threads.json")
     }
 }
 
