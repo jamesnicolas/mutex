@@ -87,7 +87,7 @@ Pass an alternative Cargo test selection after `--`:
 ./script/amp test -- -p gpui --lib
 ```
 
-The default `a1.small` orb limits the build to two concurrent Cargo jobs. A
+The default `a1.small` orb limits the build to one Cargo job. A
 clean editor build can take several minutes. Do not increase the project orb
 size without approval.
 

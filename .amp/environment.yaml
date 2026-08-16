@@ -7,7 +7,7 @@ profiles:
     required_environment: []
     required_secrets: []
     defaults:
-      CARGO_BUILD_JOBS: "2"
+      CARGO_BUILD_JOBS: "1"
       MUTEX_ORB_DISPLAY: ":99"
       MUTEX_ORB_SCREEN: "1440x900x24"
       MUTEX_ORB_SCREENSHOT_TIMEOUT_SECONDS: "1800"
