@@ -33,6 +33,10 @@ amp orb service ensure --json
 ./script/amp doctor
 ```
 
+Amp writes automatic hook output to
+`/home/user/.cache/amp/logs/setup.log` and
+`/home/user/.cache/amp/logs/resume.log` inside the orb.
+
 `./script/amp bootstrap` uses the repository's `script/linux`, installs the
 additional Xvfb, software Vulkan, noVNC, and screenshot packages, then runs
 `cargo fetch --locked`.

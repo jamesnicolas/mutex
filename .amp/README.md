@@ -7,8 +7,8 @@ deployment infrastructure.
 The normal sequence inside an orb is:
 
 ```sh
-./script/amp doctor
 ./script/amp bootstrap
+./script/amp doctor
 amp orb service ensure --json
 ./script/amp screenshot
 ```

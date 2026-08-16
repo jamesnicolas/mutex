@@ -51,12 +51,21 @@ may_sudo() {
   fi
 }
 
+load_cargo_environment() {
+  local cargo_environment="${CARGO_HOME:-$HOME/.cargo}/env"
+  if [[ -f "$cargo_environment" ]]; then
+    # shellcheck source=/dev/null
+    source "$cargo_environment"
+  fi
+}
+
 bootstrap() {
   if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
     echo "Amp bootstrap supports the Debian 12 orb image; use the platform development guide elsewhere." >&2
     return 1
   fi
 
+  load_cargo_environment
   DEBIAN_FRONTEND=noninteractive "$repository_root/script/linux"
   may_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     dbus-x11 \
@@ -73,11 +82,7 @@ bootstrap() {
     xdotool \
     xvfb
 
-  if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
-    # shellcheck source=/dev/null
-    source "${CARGO_HOME:-$HOME/.cargo}/env"
-  fi
-
+  load_cargo_environment
   require_command cargo
   prepare_directories
   cargo fetch --locked
@@ -309,9 +314,9 @@ operator_status() {
     echo "gh=missing"
   fi
 
-  if [[ -x /Users/nicolas/.local/bin/aops ]]; then
+  if command -v aops >/dev/null 2>&1; then
     echo "local project map:"
-    /Users/nicolas/.local/bin/aops project mutex
+    aops project mutex
   else
     echo "aops=missing (expected in portable orbs)"
   fi
