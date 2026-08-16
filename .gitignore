@@ -24,6 +24,7 @@
 .vscode
 .wrangler
 .amp/in/
+.amp/portal-proxy.mjs
 .perf-runs
 /assets/*licenses.*
 /crates/collab/seed.json
