@@ -23,6 +23,7 @@
 .venv
 .vscode
 .wrangler
+.amp/in/
 .perf-runs
 /assets/*licenses.*
 /crates/collab/seed.json

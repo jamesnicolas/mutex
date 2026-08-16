@@ -1,7 +1,7 @@
 # QOL backlog
 
 Small quality-of-life items, not the current focus (agent orchestration).
-Pull from this list when idle or when an independent codex thread has free
+Pull from this list when idle or when an independent agent thread has free
 hands. Check items off with the commit hash that landed them.
 
 ## New chat screen

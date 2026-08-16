@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+./script/amp bootstrap
+
+if [[ "${AMP_ORB:-}" == "1" ]]; then
+  amp orb service ensure --json
+fi

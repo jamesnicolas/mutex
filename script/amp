@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+artifact_directory="$repository_root/.amp/in/artifacts"
+log_directory="$repository_root/.amp/in/logs"
+runtime_directory="$repository_root/.amp/in/runtime"
+state_directory="$repository_root/.amp/in/state"
+
+usage() {
+  cat <<'EOF'
+Usage: ./script/amp COMMAND [ARGS...]
+
+Commands:
+  bootstrap        Install Debian build/display packages and fetch locked Rust dependencies.
+  doctor           Check the local toolchain and report credential names without values.
+  build            Build the native Mutex development binary.
+  check            Check the native Mutex development binary.
+  test             Run Mutex package tests, or pass cargo test arguments after --.
+  run              Run Mutex locally, forwarding remaining arguments to the app.
+  serve-orb        Serve a private noVNC desktop and run Mutex inside it.
+  screenshot       Capture the running orb UI to .amp/in/artifacts/mutex-orb.png.
+  resume           Recreate runtime directories and ensure declared orb services.
+  operator-status  Show read-only Amp, GitHub Actions, and repository deployment state.
+  topology         Print the deployment topology and mutation boundaries.
+EOF
+}
+
+prepare_directories() {
+  mkdir -p "$artifact_directory" "$log_directory" "$runtime_directory" "$state_directory"
+  chmod 700 "$runtime_directory" "$state_directory"
+}
+
+require_command() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "missing required command: $command_name" >&2
+    return 1
+  fi
+}
+
+may_sudo() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo "root privileges or sudo are required to install packages" >&2
+    return 1
+  fi
+}
+
+bootstrap() {
+  if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
+    echo "Amp bootstrap supports the Debian 12 orb image; use the platform development guide elsewhere." >&2
+    return 1
+  fi
+
+  DEBIAN_FRONTEND=noninteractive "$repository_root/script/linux"
+  may_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    dbus-x11 \
+    imagemagick \
+    mesa-vulkan-drivers \
+    novnc \
+    openbox \
+    vulkan-tools \
+    websockify \
+    wmctrl \
+    x11-utils \
+    x11vnc \
+    xauth \
+    xdotool \
+    xvfb
+
+  if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
+    # shellcheck source=/dev/null
+    source "${CARGO_HOME:-$HOME/.cargo}/env"
+  fi
+
+  require_command cargo
+  prepare_directories
+  cargo fetch --locked
+}
+
+doctor() {
+  local failed=0
+  local command_name
+  local -a required_commands=(cargo rustc git)
+
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    required_commands+=(clang cmake pkg-config)
+  fi
+
+  echo "repository=$repository_root"
+  echo "os=$(uname -s) $(uname -m)"
+  echo "head=$(git -C "$repository_root" rev-parse --short=12 HEAD)"
+
+  for command_name in "${required_commands[@]}"; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      echo "$command_name=present"
+    else
+      echo "$command_name=missing"
+      failed=1
+    fi
+  done
+
+  if command -v cargo >/dev/null 2>&1; then
+    cargo --version
+    rustc --version
+  fi
+
+  if [[ "${AMP_ORB:-}" == "1" ]]; then
+    for command_name in Xvfb import vulkaninfo websockify x11vnc; do
+      if command -v "$command_name" >/dev/null 2>&1; then
+        echo "$command_name=present"
+      else
+        echo "$command_name=missing"
+        failed=1
+      fi
+    done
+  fi
+
+  if command -v amp >/dev/null 2>&1; then
+    echo "amp_project:"
+    amp projects status --json
+    echo "amp_secret_and_environment_names:"
+    amp secrets list --project jenicola/mutex --json
+  else
+    echo "amp=missing (required only for orb/project operations)"
+  fi
+
+  return "$failed"
+}
+
+build() {
+  cd "$repository_root"
+  cargo build --locked -p zed --bin mutex "$@"
+}
+
+check() {
+  cd "$repository_root"
+  cargo check --locked -p zed --bin mutex "$@"
+}
+
+test_mutex() {
+  cd "$repository_root"
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+    cargo test --locked "$@"
+  else
+    cargo test --locked -p zed "$@"
+  fi
+}
+
+run_mutex() {
+  local -a application_arguments=("$@")
+  if ((${#application_arguments[@]} == 0)); then
+    application_arguments=("$repository_root")
+  fi
+
+  prepare_directories
+  cd "$repository_root"
+  cargo run --locked -p zed --bin mutex -- \
+    --user-data-dir "$state_directory" \
+    "${application_arguments[@]}"
+}
+
+wait_for_display() {
+  local attempt
+  for attempt in $(seq 1 50); do
+    if DISPLAY="$display_number" xdpyinfo >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "Xvfb did not become ready on $display_number" >&2
+  return 1
+}
+
+serve_orb() {
+  require_command Xvfb
+  require_command openbox
+  require_command websockify
+  require_command x11vnc
+
+  if [[ -z "${PORT:-}" ]]; then
+    echo "PORT is required; start this through amp orb service ensure" >&2
+    return 1
+  fi
+
+  prepare_directories
+  display_number="${MUTEX_ORB_DISPLAY:-:99}"
+  local screen="${MUTEX_ORB_SCREEN:-1440x900x24}"
+  local vnc_port="${MUTEX_ORB_VNC_PORT:-5900}"
+  local -a process_ids=()
+
+  cleanup() {
+    local process_id
+    for process_id in "${process_ids[@]}"; do
+      if kill -0 "$process_id" >/dev/null 2>&1; then
+        kill "$process_id"
+      fi
+    done
+    wait "${process_ids[@]}" 2>/dev/null || true
+  }
+  trap cleanup EXIT INT TERM
+
+  Xvfb "$display_number" -screen 0 "$screen" -nolisten tcp -ac \
+    >"$log_directory/xvfb.log" 2>&1 &
+  process_ids+=("$!")
+  wait_for_display
+
+  DISPLAY="$display_number" openbox >"$log_directory/openbox.log" 2>&1 &
+  process_ids+=("$!")
+  DISPLAY="$display_number" x11vnc -localhost -nopw -forever -shared -rfbport "$vnc_port" \
+    >"$log_directory/x11vnc.log" 2>&1 &
+  process_ids+=("$!")
+  websockify --web /usr/share/novnc/ "$PORT" "127.0.0.1:$vnc_port" \
+    >"$log_directory/websockify.log" 2>&1 &
+  process_ids+=("$!")
+
+  build >"$log_directory/build.log" 2>&1
+
+  cd "$repository_root"
+  DISPLAY="$display_number" \
+    WAYLAND_DISPLAY= \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    ZED_ALLOW_EMULATED_GPU=1 \
+    XDG_CACHE_HOME="$state_directory/cache" \
+    XDG_CONFIG_HOME="$state_directory/config" \
+    XDG_DATA_HOME="$state_directory/data" \
+    XDG_RUNTIME_DIR="$runtime_directory" \
+    "$repository_root/target/debug/mutex" \
+      --user-data-dir "$state_directory/data" \
+      "$repository_root" \
+      >"$log_directory/mutex.log" 2>&1 &
+  process_ids+=("$!")
+
+  wait -n "${process_ids[@]}"
+}
+
+screenshot() {
+  require_command import
+  require_command identify
+  require_command xdotool
+  require_command wmctrl
+
+  prepare_directories
+  display_number="${MUTEX_ORB_DISPLAY:-:99}"
+  local output_path="${1:-$artifact_directory/mutex-orb.png}"
+  local timeout_seconds="${MUTEX_ORB_SCREENSHOT_TIMEOUT_SECONDS:-1800}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local window_id=""
+  local -a window_ids=()
+
+  while ((SECONDS < deadline)); do
+    mapfile -t window_ids < <(DISPLAY="$display_number" xdotool search --onlyvisible --name 'Mutex' 2>/dev/null || true)
+    if ((${#window_ids[@]} > 0)); then
+      window_id="${window_ids[$((${#window_ids[@]} - 1))]}"
+      break
+    fi
+    sleep 2
+  done
+
+  if [[ -z "$window_id" ]]; then
+    echo "No visible Mutex window appeared within ${timeout_seconds}s." >&2
+    echo "Inspect $log_directory/build.log and $log_directory/mutex.log." >&2
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$output_path")"
+  DISPLAY="$display_number" wmctrl -ir "$window_id" -b add,maximized_vert,maximized_horz
+  DISPLAY="$display_number" xdotool windowactivate --sync "$window_id"
+  sleep 3
+  DISPLAY="$display_number" import -window "$window_id" "png:$output_path"
+  identify "$output_path"
+  sha256sum "$output_path"
+  pgrep -af '/target/debug/mutex' || pgrep -af 'target/debug/mutex'
+}
+
+resume() {
+  prepare_directories
+  if [[ "${AMP_ORB:-}" == "1" ]]; then
+    require_command amp
+    amp orb service ensure --json
+  else
+    echo "Local environment ready; orb services are only started when AMP_ORB=1."
+  fi
+}
+
+operator_status() {
+  echo "git:"
+  git -C "$repository_root" status --short --branch
+
+  if command -v amp >/dev/null 2>&1; then
+    echo "amp project:"
+    amp projects status --json
+    echo "amp secret and environment names:"
+    amp secrets list --project jenicola/mutex --json
+  else
+    echo "amp=missing"
+  fi
+
+  if command -v gh >/dev/null 2>&1; then
+    echo "recent GitHub Actions runs:"
+    gh run list --repo jamesnicolas/mutex --limit 10
+  else
+    echo "gh=missing"
+  fi
+
+  if [[ -x /Users/nicolas/.local/bin/aops ]]; then
+    echo "local project map:"
+    /Users/nicolas/.local/bin/aops project mutex
+  else
+    echo "aops=missing (expected in portable orbs)"
+  fi
+}
+
+topology() {
+  cat <<'EOF'
+Development editor: this repository -> Cargo -> native Mutex process
+Orb preview: native Mutex -> Xvfb -> x11vnc -> noVNC -> authenticated Amp portal
+Local collaboration: PostgreSQL + MinIO + LiveKit -> crates/collab (optional; not needed for editor smoke tests)
+Desktop release: protected GitHub tag workflows -> platform bundles -> draft/published GitHub release
+Docs deployment: protected GitHub workflow -> Cloudflare (inherited workflow currently owner-gated)
+Collab deployment: protected GitHub workflow -> DigitalOcean registry/Kubernetes (inherited workflow currently owner-gated)
+Marketing site: separate jamesnicolas/mutex.so repository and jenicola/mutex.so Amp project
+
+This command is informational. Do not run amp projects deploy, tag a release, dispatch a deploy workflow,
+or use the local aops mutex deploy mapping for this native repository without explicit approval.
+EOF
+}
+
+command_name="${1:-}"
+if [[ -n "$command_name" ]]; then
+  shift
+fi
+
+case "$command_name" in
+  bootstrap) bootstrap "$@" ;;
+  doctor) doctor "$@" ;;
+  build) build "$@" ;;
+  check) check "$@" ;;
+  test) test_mutex "$@" ;;
+  run) run_mutex "$@" ;;
+  serve-orb) serve_orb "$@" ;;
+  screenshot) screenshot "$@" ;;
+  resume) resume "$@" ;;
+  operator-status) operator_status "$@" ;;
+  topology) topology "$@" ;;
+  -h|--help|help|"") usage ;;
+  *)
+    echo "unknown command: $command_name" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

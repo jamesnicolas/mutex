@@ -1,0 +1,11 @@
+services:
+  desktop:
+    command: ./script/amp serve-orb
+    health: /vnc.html
+    env:
+      CARGO_BUILD_JOBS: "2"
+      MUTEX_ORB_DISPLAY: ":99"
+      MUTEX_ORB_SCREEN: "1440x900x24"
+    portal:
+      title: Mutex
+      description: The native Linux development build running in a private virtual desktop.

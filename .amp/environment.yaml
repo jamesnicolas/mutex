@@ -1,0 +1,45 @@
+version: 1
+amp_project: jenicola/mutex
+
+profiles:
+  editor:
+    description: Build, test, run, and screenshot the native Mutex editor.
+    required_environment: []
+    required_secrets: []
+    defaults:
+      CARGO_BUILD_JOBS: "2"
+      MUTEX_ORB_DISPLAY: ":99"
+      MUTEX_ORB_SCREEN: "1440x900x24"
+      MUTEX_ORB_SCREENSHOT_TIMEOUT_SECONDS: "1800"
+
+  local_collab:
+    description: Optional local collaboration stack; development-only values live in crates/collab/.env.toml.
+    required_environment:
+      - DATABASE_URL
+      - ZED_ENVIRONMENT
+      - LIVEKIT_SERVER
+      - BLOB_STORE_URL
+    production_secrets_not_for_orbs:
+      - ZED_CLOUD_INTERNAL_API_KEY
+      - LIVEKIT_KEY
+      - LIVEKIT_SECRET
+      - BLOB_STORE_ACCESS_KEY
+      - BLOB_STORE_SECRET_KEY
+      - ZED_CLIENT_CHECKSUM_SEED
+
+  release_and_deploy:
+    description: Production credentials stay in protected GitHub environments or use short-lived OIDC.
+    required_environment: []
+    required_secrets: []
+    github_managed_secret_names:
+      - CLOUDFLARE_ACCOUNT_ID
+      - CLOUDFLARE_API_TOKEN
+      - DIGITALOCEAN_ACCESS_TOKEN
+      - DOCS_AMPLITUDE_API_KEY
+      - DOCS_CONSENT_IO_INSTANCE
+      - R2_ACCESS_KEY_ID
+      - R2_ACCOUNT_ID
+      - R2_SECRET_ACCESS_KEY
+    preferred_orb_identity:
+      command: amp orb id-token --audience AUDIENCE
+      note: Configure provider trust before use; never print or persist the resulting token.
