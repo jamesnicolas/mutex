@@ -261,6 +261,9 @@ screenshot() {
 
   while ((SECONDS < deadline)); do
     mapfile -t window_ids < <(DISPLAY="$display_number" xdotool search --onlyvisible --name 'Mutex' 2>/dev/null || true)
+    if ((${#window_ids[@]} == 0)); then
+      mapfile -t window_ids < <(DISPLAY="$display_number" xdotool search --onlyvisible --class 'Mutex' 2>/dev/null || true)
+    fi
     if ((${#window_ids[@]} > 0)); then
       window_id="${window_ids[$((${#window_ids[@]} - 1))]}"
       break
