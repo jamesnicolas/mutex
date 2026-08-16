@@ -339,6 +339,10 @@ EOF
 
 load_cargo_environment
 
+if [[ "${AMP_ORB:-}" == "1" ]]; then
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+fi
+
 command_name="${1:-}"
 if [[ -n "$command_name" ]]; then
   shift
