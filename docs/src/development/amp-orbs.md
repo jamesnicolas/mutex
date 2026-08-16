@@ -87,9 +87,10 @@ Pass an alternative Cargo test selection after `--`:
 ./script/amp test -- -p gpui --lib
 ```
 
-The default `a1.small` orb limits the build to one Cargo job. A
-clean editor build can take several minutes. Do not increase the project orb
-size without approval.
+The default `a1.small` orb limits the build to one Cargo job and selects
+`clang`/`clang++`. Debian 12's default GCC rejects the C++ bridge used by
+`webrtc-sys`. A clean editor build can take several minutes. Do not increase
+the project orb size without approval.
 
 ## Credentials {#amp-orb-credentials}
 

@@ -4,6 +4,8 @@ services:
     health: /vnc.html
     env:
       CARGO_BUILD_JOBS: "1"
+      CC: clang
+      CXX: clang++
       MUTEX_ORB_DISPLAY: ":99"
       MUTEX_ORB_SCREEN: "1440x900x24"
     portal:
