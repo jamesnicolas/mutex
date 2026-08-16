@@ -6,8 +6,9 @@ description: "Bootstrap, run, test, and inspect Mutex in an Amp orb."
 # Developing Mutex in Amp Orbs
 
 Amp orbs run Debian 12. Mutex is a native GPUI desktop application, not a web
-application. The orb workflow runs the real Linux editor in Xvfb and exposes the
-virtual desktop through an authenticated noVNC portal.
+application. The orb workflow runs the real Linux editor in Xvfb, composites
+its software-Vulkan frames with Picom, and exposes the virtual desktop through
+an authenticated noVNC portal.
 
 The marketing site is a separate repository and Amp project:
 `jamesnicolas/mutex.so` and `jenicola/mutex.so`. Do not clone or deploy it from
@@ -38,8 +39,8 @@ Amp writes automatic hook output to
 `/home/user/.cache/amp/logs/resume.log` inside the orb.
 
 `./script/amp bootstrap` uses the repository's `script/linux`, installs the
-additional Xvfb, software Vulkan, noVNC, and screenshot packages, then runs
-`cargo fetch --locked`.
+additional Xvfb, software Vulkan, XRender compositor, noVNC, and screenshot
+packages, then runs `cargo fetch --locked`.
 
 ## Run and inspect Mutex {#amp-orb-run}
 

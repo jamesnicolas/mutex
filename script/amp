@@ -73,6 +73,7 @@ bootstrap() {
     mesa-vulkan-drivers \
     novnc \
     openbox \
+    picom \
     vulkan-tools \
     websockify \
     wmctrl \
@@ -116,7 +117,7 @@ doctor() {
   fi
 
   if [[ "${AMP_ORB:-}" == "1" ]]; then
-    for command_name in Xvfb import vulkaninfo websockify x11vnc; do
+    for command_name in Xvfb import picom vulkaninfo websockify x11vnc; do
       if command -v "$command_name" >/dev/null 2>&1; then
         echo "$command_name=present"
       else
@@ -186,6 +187,7 @@ wait_for_display() {
 serve_orb() {
   require_command Xvfb
   require_command openbox
+  require_command picom
   require_command websockify
   require_command x11vnc
 
@@ -218,6 +220,15 @@ serve_orb() {
 
   DISPLAY="$display_number" openbox >"$log_directory/openbox.log" 2>&1 &
   process_ids+=("$!")
+  DISPLAY="$display_number" picom --config /dev/null --backend xrender --no-use-damage \
+    >"$log_directory/picom.log" 2>&1 &
+  process_ids+=("$!")
+  sleep 1
+  if ! kill -0 "${process_ids[$((${#process_ids[@]} - 1))]}" >/dev/null 2>&1; then
+    echo "picom did not stay running on $display_number" >&2
+    cat "$log_directory/picom.log" >&2
+    return 1
+  fi
   DISPLAY="$display_number" x11vnc -localhost -nopw -forever -shared -rfbport "$vnc_port" \
     >"$log_directory/x11vnc.log" 2>&1 &
   process_ids+=("$!")
