@@ -8,6 +8,8 @@ services:
       CXX: clang++
       MUTEX_ORB_DISPLAY: ":99"
       MUTEX_ORB_SCREEN: "1440x900x24"
+      VK_DRIVER_FILES: /nonexistent
+      VK_ICD_FILENAMES: /nonexistent
     portal:
       title: Mutex
       description: The native Linux development build running in a private virtual desktop.

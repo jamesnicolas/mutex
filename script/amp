@@ -70,11 +70,11 @@ bootstrap() {
   may_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     dbus-x11 \
     imagemagick \
-    mesa-vulkan-drivers \
+    libgl1-mesa-dri \
+    mesa-utils \
     novnc \
     openbox \
     picom \
-    vulkan-tools \
     websockify \
     wmctrl \
     x11-utils \
@@ -117,7 +117,7 @@ doctor() {
   fi
 
   if [[ "${AMP_ORB:-}" == "1" ]]; then
-    for command_name in Xvfb import picom vulkaninfo websockify x11vnc; do
+    for command_name in Xvfb glxinfo import picom websockify x11vnc; do
       if command -v "$command_name" >/dev/null 2>&1; then
         echo "$command_name=present"
       else
@@ -242,6 +242,8 @@ serve_orb() {
   DISPLAY="$display_number" \
     WAYLAND_DISPLAY= \
     LIBGL_ALWAYS_SOFTWARE=1 \
+    VK_DRIVER_FILES="${VK_DRIVER_FILES:-/nonexistent}" \
+    VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/nonexistent}" \
     ZED_ALLOW_EMULATED_GPU=1 \
     XDG_CACHE_HOME="$state_directory/cache" \
     XDG_CONFIG_HOME="$state_directory/config" \

@@ -7,7 +7,7 @@ description: "Bootstrap, run, test, and inspect Mutex in an Amp orb."
 
 Amp orbs run Debian 12. Mutex is a native GPUI desktop application, not a web
 application. The orb workflow runs the real Linux editor in Xvfb, composites
-its software-Vulkan frames with Picom, and exposes the virtual desktop through
+its software-OpenGL frames with Picom, and exposes the virtual desktop through
 an authenticated noVNC portal.
 
 The marketing site is a separate repository and Amp project:
@@ -39,7 +39,7 @@ Amp writes automatic hook output to
 `/home/user/.cache/amp/logs/resume.log` inside the orb.
 
 `./script/amp bootstrap` uses the repository's `script/linux`, installs the
-additional Xvfb, software Vulkan, XRender compositor, noVNC, and screenshot
+additional Xvfb, Mesa OpenGL, XRender compositor, noVNC, and screenshot
 packages, then runs `cargo fetch --locked`.
 
 ## Run and inspect Mutex {#amp-orb-run}
@@ -92,6 +92,11 @@ The default `a1.small` orb limits the build to one Cargo job and selects
 `clang`/`clang++`. Debian 12's default GCC rejects the C++ bridge used by
 `webrtc-sys`. A clean editor build can take several minutes. Do not increase
 the project orb size without approval.
+
+The orb also sets `VK_DRIVER_FILES` and the legacy `VK_ICD_FILENAMES` to an
+intentionally nonexistent path. This prevents wgpu from selecting software
+Vulkan, whose frames are not presented by Xvfb, and makes it use Mesa OpenGL.
+Remove these overrides when running against a real GPU-backed X server.
 
 ## Credentials {#amp-orb-credentials}
 

@@ -13,6 +13,8 @@ profiles:
       MUTEX_ORB_DISPLAY: ":99"
       MUTEX_ORB_SCREEN: "1440x900x24"
       MUTEX_ORB_SCREENSHOT_TIMEOUT_SECONDS: "1800"
+      VK_DRIVER_FILES: /nonexistent
+      VK_ICD_FILENAMES: /nonexistent
 
   local_collab:
     description: Optional local collaboration stack; development-only values live in crates/collab/.env.toml.
